@@ -44,8 +44,23 @@ A simple, production-ready data platform deployed on Kubernetes.
 |---------|-----|-------------|
 | **Grafana** | http://localhost:3000 | admin / admin123 |
 | **Airflow** | http://localhost:8080 | admin / admin123 |
+| **Flower** | http://localhost:5555 | - |
 | **MinIO Console** | http://localhost:9001 | minioadmin / minioadmin123 |
 | **Prometheus** | http://localhost:9090 | - |
+
+📋 Summary of Required Changes:
+✅ Airflow 2.8.1 YAML - Already implemented
+🔧 deploy.sh - Add worker and flower wait commands
+🔧 port-forward.sh - Add flower port-forward
+🔧 Display URLs - Add Flower to service lists
+📖 README.md - Add Flower to documentation (optional)
+🎯 What You Get After These Updates:
+
+Advanced Airflow 2.8.1 with CeleryExecutor
+High Availability with multiple replicas
+Flower Monitoring for Celery workers
+Production-ready configuration
+Scalable architecture with 3 workers
 
 ## 🛠️ Management
 

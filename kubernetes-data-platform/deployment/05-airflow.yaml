@@ -1,4 +1,307 @@
-# Apache Airflow Configuration
+# Advanced Apache Airflow 2.8.1 Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: airflow-config
+  namespace: data-platform
+data:
+  airflow.cfg: |
+    [core]
+    dags_folder = /opt/airflow/dags
+    hostname_callable = airflow.utils.net.get_host_ip_address
+    default_timezone = utc
+    executor = CeleryExecutor
+    parallelism = 32
+    max_active_tasks_per_dag = 16
+    dags_are_paused_at_creation = True
+    max_active_runs_per_dag = 16
+    load_examples = False
+    plugins_folder = /opt/airflow/plugins
+    donot_pickle = False
+    dagbag_import_timeout = 30
+    task_runner = StandardTaskRunner
+    default_impersonation =
+    security =
+    unit_test_mode = False
+    enable_xcom_pickling = False
+    killed_task_cleanup_time = 60
+    dag_discovery_safe_mode = True
+    default_task_retries = 0
+    min_serialized_dag_update_interval = 30
+    min_serialized_dag_fetch_interval = 10
+    max_serialized_dag_update_interval = 180
+    compress_serialized_dags = False
+
+    [database]
+    sql_alchemy_conn = postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow
+    sql_alchemy_pool_size = 10
+    sql_alchemy_max_overflow = 20
+    sql_alchemy_pool_recycle = 1800
+    sql_alchemy_pool_pre_ping = True
+    sql_alchemy_schema =
+
+    [celery]
+    broker_url = redis://:redispassword123@redis:6379/1
+    result_backend = redis://:redispassword123@redis:6379/1
+    flower_host = 0.0.0.0
+    flower_url_prefix =
+    flower_port = 5555
+    flower_basic_auth =
+    default_queue = default
+    sync =
+    celery_app_name = airflow.executors.celery_executor
+    worker_concurrency = 16
+    worker_log_server_port = 8793
+    broker_transport_options = {"visibility_timeout": 21600}
+    event_buffer_size = 1000
+    worker_enable_remote_control = true
+    result_expires = 3600
+    task_track_started = True
+    task_publish_retry = True
+    worker_prefetch_multiplier = 1
+
+    [operators]
+    default_owner = airflow
+    default_cpus = 1
+    default_ram = 512
+    default_disk = 512
+    default_gpus = 0
+
+    [webserver]
+    base_url = http://localhost:8080
+    default_ui_timezone = UTC
+    web_server_host = 0.0.0.0
+    web_server_port = 8080
+    web_server_ssl_cert =
+    web_server_ssl_key =
+    web_server_master_timeout = 120
+    web_server_worker_timeout = 120
+    worker_refresh_batch_size = 1
+    worker_refresh_interval = 6000
+    secret_key = temporary_key
+    workers = 4
+    worker_class = sync
+    access_logfile = -
+    error_logfile = -
+    expose_config = False
+    authenticate = False
+    filter_by_owner = False
+    owner_mode = user
+    dag_default_view = tree
+    dag_orientation = LR
+    demo_mode = False
+    log_fetch_timeout_sec = 5
+    hide_paused_dags_by_default = False
+    page_size = 100
+    navbar_color = #fff
+    default_dag_run_display_number = 25
+    enable_proxy_fix = False
+    proxy_fix_x_for = 1
+    proxy_fix_x_proto = 1
+    proxy_fix_x_host = 1
+    proxy_fix_x_port = 1
+    proxy_fix_x_prefix = 1
+    cookie_secure = False
+    cookie_samesite = Lax
+    default_wrap = False
+    x_frame_enabled = True
+    show_recent_stats_for_completed_runs = True
+    update_fab_perms = True
+
+    [email]
+    email_backend = airflow.utils.email.send_email_smtp
+    email_conn_id = smtp_default
+    default_email_on_retry = True
+    default_email_on_failure = True
+
+    [smtp]
+    smtp_host = localhost
+    smtp_starttls = True
+    smtp_ssl = False
+    smtp_user =
+    smtp_password =
+    smtp_port = 587
+    smtp_mail_from = airflow@example.com
+    smtp_timeout = 30
+    smtp_retry_limit = 5
+
+    [sentry]
+    sentry_dsn =
+
+    [celery_kubernetes_executor]
+    kubernetes_queue = kubernetes
+
+    [kubernetes]
+    pod_template_file =
+    worker_container_repository = apache/airflow
+    worker_container_tag = 2.8.1-python3.11
+    namespace = data-platform
+    delete_worker_pods = True
+    delete_worker_pods_on_start = False
+    worker_pods_creation_batch_size = 1
+    multi_namespace_mode = False
+    in_cluster = True
+    cluster_context =
+    config_file =
+    kube_client_request_args =
+    enable_tcp_keepalive = True
+    tcp_keep_idle = 120
+    tcp_keep_intvl = 30
+    tcp_keep_cnt = 6
+
+    [kubernetes_secrets]
+
+    [kubernetes_environment_variables]
+
+    [kubernetes_labels]
+
+    [kubernetes_annotations]
+
+    [kubernetes_node_selectors]
+
+    [kubernetes_affinity]
+
+    [kubernetes_tolerations]
+
+    [hive]
+    default_hive_mapred_queue =
+
+    [webhdfs]
+    webhdfs_connection = webhdfs_default
+
+    [logging]
+    base_log_folder = /opt/airflow/logs
+    remote_logging = False
+    remote_log_conn_id =
+    remote_base_log_folder =
+    encrypt_s3_logs = False
+    logging_level = INFO
+    fab_logging_level = WARN
+    logging_config_class =
+    colored_console_log = True
+    colored_log_format = [%%(blue)s%%(asctime)s%%(reset)s] {{%%(blue)s%%(filename)s:%%(reset)s%%(lineno)d}} %%(log_color)s%%(levelname)s%%(reset)s - %%(log_color)s%%(message)s%%(reset)s
+    colored_formatter_class = airflow.utils.log.colored_log.CustomTTYColoredFormatter
+    log_format = [%%(asctime)s] {{%%(filename)s:%%(lineno)d}} %%(levelname)s - %%(message)s
+    simple_log_format = %%(asctime)s %%(levelname)s - %%(message)s
+    task_log_prefix_template =
+    log_filename_template = {{ ti.dag_id }}/{{ ti.task_id }}/{{ ts }}/{{ try_number }}.log
+    log_processor_filename_template = {{ filename }}.log
+    dag_processor_manager_log_location = /opt/airflow/logs/dag_processor_manager/dag_processor_manager.log
+    task_log_reader = task
+
+    [metrics]
+    statsd_on = False
+    statsd_host = localhost
+    statsd_port = 8125
+    statsd_prefix = airflow
+    statsd_allow_list =
+    stat_name_handler =
+    statsd_datadog_enabled = False
+    statsd_datadog_tags =
+    statsd_custom_client_path =
+
+    [secrets]
+    backend =
+    backend_kwargs =
+
+    [cli]
+    api_client = airflow.api.client.json_client
+    endpoint_url = http://localhost:8080
+
+    [debug]
+    fail_fast = False
+
+    [api]
+    enable_experimental_api = False
+    auth_backends = airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
+    maximum_page_limit = 100
+    fallback_page_limit = 100
+    google_key_path =
+    google_scopes = https://www.googleapis.com/auth/cloud-platform
+    google_audience =
+    google_service_account_email =
+    google_impersonation_chain =
+
+    [lineage]
+    backend =
+
+    [atlas]
+    sasl_enabled = False
+    host =
+    port = 21000
+    username =
+    password =
+
+    [operators]
+    default_owner = airflow
+    default_cpus = 1
+    default_ram = 512
+    default_disk = 512
+    default_gpus = 0
+    allow_illegal_arguments = False
+
+    [admin]
+    hide_sensitive_variable_fields = True
+    sensitive_variable_fields =
+
+    [elasticsearch]
+    host =
+    log_id_template = {dag_id}-{task_id}-{execution_date}-{try_number}
+    end_of_log_mark = end_of_log
+    frontend =
+    write_stdout = False
+    json_format = False
+    json_fields = asctime, filename, lineno, levelname, message
+
+    [elasticsearch_configs]
+    use_ssl = False
+    verify_certs = True
+
+    [kerberos]
+    ccache = /tmp/airflow_krb5_ccache
+    principal = airflow
+    reinit_frequency = 3600
+    kinit_path = kinit
+    keytab = airflow.keytab
+
+    [github_enterprise]
+    api_rev = v3
+
+    [google]
+    oauth2_provider_authority = https://accounts.google.com
+    oauth2_provider_revoke_endpoint = https://oauth2.googleapis.com/revoke
+    oauth2_provider_token_endpoint = https://oauth2.googleapis.com/token
+    oauth2_provider_authorization_endpoint = https://accounts.google.com/o/oauth2/auth
+
+    [google_cloud_platform]
+    gcp_service_account_keys =
+
+    [azure]
+
+    [dask]
+    cluster_address = 127.0.0.1:8786
+    tls_ca =
+    tls_cert =
+    tls_key =
+
+    [smart_sensor]
+    use_smart_sensor = False
+    shard_code_upper_limit = 10000
+    shards = 5
+    sensors_enabled = PokeOnlySensor
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: airflow-secret
+  namespace: data-platform
+type: Opaque
+data:
+  fernet-key: Wm5ldF9rZXlfaGVyZV9iYXNlNjRfZW5jb2RlZA==
+  webserver-secret-key: dGVtcG9yYXJ5X2tleQ==
+
+---
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -7,20 +310,78 @@ metadata:
 spec:
   template:
     spec:
-      containers:
-      - name: airflow-db-init
-        image: apache/airflow:2.7.1-python3.10
+      initContainers:
+      - name: wait-for-postgres
+        image: postgres:15-alpine
         command:
         - /bin/bash
         - -c
         - |
-          airflow db init
-          airflow users create             --username admin             --firstname Admin             --lastname User             --role Admin             --email admin@dataplatform.local             --password admin123
+          until pg_isready -h postgres-primary -p 5432 -U postgres; do
+            echo "Waiting for PostgreSQL..."
+            sleep 5
+          done
         env:
-        - name: AIRFLOW__CORE__SQL_ALCHEMY_CONN
+        - name: PGPASSWORD
+          value: "password123"
+      containers:
+      - name: airflow-db-init
+        image: apache/airflow:2.8.1-python3.11
+        command:
+        - /bin/bash
+        - -c
+        - |
+          # Wait for database
+          airflow db check
+
+          # Initialize database
+          airflow db init
+
+          # Create admin user
+          airflow users create             --username admin             --firstname Admin             --lastname User             --role Admin             --email admin@dataplatform.local             --password admin123
+
+          # Install additional packages
+          pip install --no-cache-dir             redis==4.6.0             celery[redis]==5.3.4             flower==2.0.1             psycopg2-binary==2.9.7             apache-airflow-providers-postgres==5.6.0             apache-airflow-providers-redis==3.4.0             apache-airflow-providers-celery==3.3.4
+
+        env:
+        - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
           value: "postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow"
         - name: AIRFLOW__CORE__FERNET_KEY
-          value: "Wm5ldF9rZXlfaGVyZV9iYXNlNjRfZW5jb2RlZA=="
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: fernet-key
+        - name: AIRFLOW__CELERY__BROKER_URL
+          value: "redis://:redispassword123@redis:6379/1"
+        - name: AIRFLOW__CELERY__RESULT_BACKEND
+          value: "redis://:redispassword123@redis:6379/1"
+        - name: AIRFLOW__CORE__EXECUTOR
+          value: "CeleryExecutor"
+        - name: AIRFLOW__CORE__LOAD_EXAMPLES
+          value: "False"
+        - name: AIRFLOW__WEBSERVER__EXPOSE_CONFIG
+          value: "True"
+        - name: AIRFLOW__CORE__PARALLELISM
+          value: "32"
+        - name: AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG
+          value: "16"
+        - name: AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG
+          value: "16"
+        volumeMounts:
+        - name: airflow-config
+          mountPath: /opt/airflow/airflow.cfg
+          subPath: airflow.cfg
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+      volumes:
+      - name: airflow-config
+        configMap:
+          name: airflow-config
       restartPolicy: OnFailure
 
 ---
@@ -30,7 +391,7 @@ metadata:
   name: airflow-webserver
   namespace: data-platform
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: airflow
@@ -41,27 +402,103 @@ spec:
         app: airflow
         component: webserver
     spec:
+      initContainers:
+      - name: wait-for-db-init
+        image: busybox:1.35
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Waiting for database initialization..."
+          sleep 30
       containers:
       - name: airflow-webserver
-        image: apache/airflow:2.7.1-python3.10
-        command: ["airflow", "webserver"]
+        image: apache/airflow:2.8.1-python3.11
+        command:
+        - /bin/bash
+        - -c
+        - |
+          # Install additional packages
+          pip install --no-cache-dir             redis==4.6.0             celery[redis]==5.3.4             flower==2.0.1             psycopg2-binary==2.9.7             apache-airflow-providers-postgres==5.6.0             apache-airflow-providers-redis==3.4.0             apache-airflow-providers-celery==3.3.4
+
+          # Start webserver
+          airflow webserver --port 8080
         env:
-        - name: AIRFLOW__CORE__SQL_ALCHEMY_CONN
+        - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
           value: "postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow"
+        - name: AIRFLOW__CORE__FERNET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: fernet-key
         - name: AIRFLOW__CELERY__BROKER_URL
           value: "redis://:redispassword123@redis:6379/1"
-        - name: AIRFLOW__CORE__FERNET_KEY
-          value: "Wm5ldF9rZXlfaGVyZV9iYXNlNjRfZW5jb2RlZA=="
+        - name: AIRFLOW__CELERY__RESULT_BACKEND
+          value: "redis://:redispassword123@redis:6379/1"
+        - name: AIRFLOW__CORE__EXECUTOR
+          value: "CeleryExecutor"
+        - name: AIRFLOW__CORE__LOAD_EXAMPLES
+          value: "False"
+        - name: AIRFLOW__WEBSERVER__EXPOSE_CONFIG
+          value: "True"
+        - name: AIRFLOW__CORE__PARALLELISM
+          value: "32"
+        - name: AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG
+          value: "16"
+        - name: AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG
+          value: "16"
+        - name: AIRFLOW__WEBSERVER__WORKERS
+          value: "4"
+        - name: AIRFLOW__WEBSERVER__WORKER_TIMEOUT
+          value: "120"
+        - name: AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT
+          value: "120"
+        - name: AIRFLOW__CELERY__WORKER_CONCURRENCY
+          value: "16"
         ports:
         - containerPort: 8080
           name: webserver
+        volumeMounts:
+        - name: airflow-config
+          mountPath: /opt/airflow/airflow.cfg
+          subPath: airflow.cfg
+        - name: airflow-logs
+          mountPath: /opt/airflow/logs
+        - name: airflow-dags
+          mountPath: /opt/airflow/dags
         resources:
           requests:
-            memory: "512Mi"
+            memory: "1Gi"
             cpu: "500m"
           limits:
-            memory: "1Gi"
-            cpu: "1000m"
+            memory: "2Gi"
+            cpu: "1500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: airflow-config
+        configMap:
+          name: airflow-config
+      - name: airflow-logs
+        persistentVolumeClaim:
+          claimName: airflow-logs-pvc
+      - name: airflow-dags
+        persistentVolumeClaim:
+          claimName: airflow-dags-pvc
 
 ---
 apiVersion: apps/v1
@@ -70,7 +507,7 @@ metadata:
   name: airflow-scheduler
   namespace: data-platform
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: airflow
@@ -83,24 +520,276 @@ spec:
     spec:
       containers:
       - name: airflow-scheduler
-        image: apache/airflow:2.7.1-python3.10
-        command: ["airflow", "scheduler"]
+        image: apache/airflow:2.8.1-python3.11
+        command:
+        - /bin/bash
+        - -c
+        - |
+          # Install additional packages
+          pip install --no-cache-dir             redis==4.6.0             celery[redis]==5.3.4             flower==2.0.1             psycopg2-binary==2.9.7             apache-airflow-providers-postgres==5.6.0             apache-airflow-providers-redis==3.4.0             apache-airflow-providers-celery==3.3.4
+
+          # Start scheduler
+          airflow scheduler
         env:
-        - name: AIRFLOW__CORE__SQL_ALCHEMY_CONN
+        - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
           value: "postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow"
+        - name: AIRFLOW__CORE__FERNET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: fernet-key
         - name: AIRFLOW__CELERY__BROKER_URL
           value: "redis://:redispassword123@redis:6379/1"
-        - name: AIRFLOW__CORE__FERNET_KEY
-          value: "Wm5ldF9rZXlfaGVyZV9iYXNlNjRfZW5jb2RlZA=="
+        - name: AIRFLOW__CELERY__RESULT_BACKEND
+          value: "redis://:redispassword123@redis:6379/1"
+        - name: AIRFLOW__CORE__EXECUTOR
+          value: "CeleryExecutor"
+        - name: AIRFLOW__CORE__LOAD_EXAMPLES
+          value: "False"
+        - name: AIRFLOW__CORE__PARALLELISM
+          value: "32"
+        - name: AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG
+          value: "16"
+        - name: AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG
+          value: "16"
+        - name: AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL
+          value: "300"
+        - name: AIRFLOW__SCHEDULER__CATCHUP_BY_DEFAULT
+          value: "False"
+        - name: AIRFLOW__SCHEDULER__MAX_TIS_PER_QUERY
+          value: "512"
+        - name: AIRFLOW__SCHEDULER__PROCESSOR_POLL_INTERVAL
+          value: "1"
+        volumeMounts:
+        - name: airflow-config
+          mountPath: /opt/airflow/airflow.cfg
+          subPath: airflow.cfg
+        - name: airflow-logs
+          mountPath: /opt/airflow/logs
+        - name: airflow-dags
+          mountPath: /opt/airflow/dags
         resources:
           requests:
-            memory: "512Mi"
+            memory: "1Gi"
             cpu: "500m"
           limits:
-            memory: "1Gi"
-            cpu: "1000m"
+            memory: "2Gi"
+            cpu: "1500m"
+        livenessProbe:
+          exec:
+            command:
+            - /bin/bash
+            - -c
+            - "pgrep -f 'airflow scheduler'"
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+      volumes:
+      - name: airflow-config
+        configMap:
+          name: airflow-config
+      - name: airflow-logs
+        persistentVolumeClaim:
+          claimName: airflow-logs-pvc
+      - name: airflow-dags
+        persistentVolumeClaim:
+          claimName: airflow-dags-pvc
 
 ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-worker
+  namespace: data-platform
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: airflow
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: airflow
+        component: worker
+    spec:
+      containers:
+      - name: airflow-worker
+        image: apache/airflow:2.8.1-python3.11
+        command:
+        - /bin/bash
+        - -c
+        - |
+          # Install additional packages
+          pip install --no-cache-dir             redis==4.6.0             celery[redis]==5.3.4             flower==2.0.1             psycopg2-binary==2.9.7             apache-airflow-providers-postgres==5.6.0             apache-airflow-providers-redis==3.4.0             apache-airflow-providers-celery==3.3.4
+
+          # Start celery worker
+          airflow celery worker
+        env:
+        - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+          value: "postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow"
+        - name: AIRFLOW__CORE__FERNET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: fernet-key
+        - name: AIRFLOW__CELERY__BROKER_URL
+          value: "redis://:redispassword123@redis:6379/1"
+        - name: AIRFLOW__CELERY__RESULT_BACKEND
+          value: "redis://:redispassword123@redis:6379/1"
+        - name: AIRFLOW__CORE__EXECUTOR
+          value: "CeleryExecutor"
+        - name: AIRFLOW__CELERY__WORKER_CONCURRENCY
+          value: "16"
+        - name: AIRFLOW__CELERY__WORKER_PREFETCH_MULTIPLIER
+          value: "1"
+        - name: AIRFLOW__CORE__PARALLELISM
+          value: "32"
+        volumeMounts:
+        - name: airflow-config
+          mountPath: /opt/airflow/airflow.cfg
+          subPath: airflow.cfg
+        - name: airflow-logs
+          mountPath: /opt/airflow/logs
+        - name: airflow-dags
+          mountPath: /opt/airflow/dags
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          exec:
+            command:
+            - /bin/bash
+            - -c
+            - "celery -A airflow.executors.celery_executor inspect active"
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+      volumes:
+      - name: airflow-config
+        configMap:
+          name: airflow-config
+      - name: airflow-logs
+        persistentVolumeClaim:
+          claimName: airflow-logs-pvc
+      - name: airflow-dags
+        persistentVolumeClaim:
+          claimName: airflow-dags-pvc
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-flower
+  namespace: data-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+      component: flower
+  template:
+    metadata:
+      labels:
+        app: airflow
+        component: flower
+    spec:
+      containers:
+      - name: airflow-flower
+        image: apache/airflow:2.8.1-python3.11
+        command:
+        - /bin/bash
+        - -c
+        - |
+          # Install additional packages
+          pip install --no-cache-dir             redis==4.6.0             celery[redis]==5.3.4             flower==2.0.1             psycopg2-binary==2.9.7
+
+          # Start flower
+          airflow celery flower
+        env:
+        - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+          value: "postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow"
+        - name: AIRFLOW__CORE__FERNET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: fernet-key
+        - name: AIRFLOW__CELERY__BROKER_URL
+          value: "redis://:redispassword123@redis:6379/1"
+        - name: AIRFLOW__CELERY__RESULT_BACKEND
+          value: "redis://:redispassword123@redis:6379/1"
+        - name: AIRFLOW__CELERY__FLOWER_HOST
+          value: "0.0.0.0"
+        - name: AIRFLOW__CELERY__FLOWER_PORT
+          value: "5555"
+        ports:
+        - containerPort: 5555
+          name: flower
+        volumeMounts:
+        - name: airflow-config
+          mountPath: /opt/airflow/airflow.cfg
+          subPath: airflow.cfg
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 5555
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 5555
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      volumes:
+      - name: airflow-config
+        configMap:
+          name: airflow-config
+
+---
+# Persistent Volume Claims for Airflow
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: airflow-logs-pvc
+  namespace: data-platform
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 20Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: airflow-dags-pvc
+  namespace: data-platform
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Services
 apiVersion: v1
 kind: Service
 metadata:
@@ -113,4 +802,37 @@ spec:
   ports:
   - port: 8080
     targetPort: 8080
+    name: webserver
   type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-flower
+  namespace: data-platform
+spec:
+  selector:
+    app: airflow
+    component: flower
+  ports:
+  - port: 5555
+    targetPort: 5555
+    name: flower
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-worker
+  namespace: data-platform
+spec:
+  selector:
+    app: airflow
+    component: worker
+  ports:
+  - port: 8793
+    targetPort: 8793
+    name: worker-log
+  clusterIP: None

@@ -104,6 +104,8 @@ kubectl apply -f deployment/05-airflow.yaml
 wait_for_job "airflow-db-init" "data-platform" 600
 wait_for_deployment "airflow-webserver" "data-platform" 600
 wait_for_deployment "airflow-scheduler" "data-platform" 300
+wait_for_deployment "airflow-worker" "data-platform" 300
+wait_for_deployment "airflow-flower" "data-platform" 300
 
 print_status "Step 5: Deploying MinIO..."
 kubectl apply -f deployment/06-minio.yaml
@@ -118,5 +120,6 @@ echo ""
 print_status "Services will be available at:"
 echo "  📊 Grafana:    http://localhost:3000 (admin/admin123)"
 echo "  ⚙️  Airflow:    http://localhost:8080 (admin/admin123)"
+echo "  🌸 Flower:     http://localhost:5555 (Celery monitoring)"
 echo "  💾 MinIO:      http://localhost:9001 (minioadmin/minioadmin123)"
 echo "  🔍 Prometheus: http://localhost:9090"

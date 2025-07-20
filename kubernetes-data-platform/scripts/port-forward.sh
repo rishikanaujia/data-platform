@@ -24,6 +24,7 @@ sleep 2
 # Start all port-forwards
 start_port_forward "grafana" 3000 3000
 start_port_forward "airflow-webserver" 8080 8080
+start_port_forward "airflow-flower" 5555 5555
 start_port_forward "minio-console" 9001 9001
 start_port_forward "prometheus" 9090 9090
 
@@ -33,6 +34,7 @@ echo ""
 echo "Access your services at:"
 echo "  🔍 Grafana (admin/admin123):     http://localhost:3000"
 echo "  ⚙️  Airflow (admin/admin123):     http://localhost:8080"
+echo "  🌸 Flower (Celery Monitor):      http://localhost:5555"
 echo "  💾 MinIO (minioadmin/minioadmin123): http://localhost:9001"
 echo "  📈 Prometheus:                   http://localhost:9090"
 echo ""
