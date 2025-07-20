@@ -1,0 +1,116 @@
+# Apache Airflow Configuration
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: airflow-db-init
+  namespace: data-platform
+spec:
+  template:
+    spec:
+      containers:
+      - name: airflow-db-init
+        image: apache/airflow:2.7.1-python3.10
+        command:
+        - /bin/bash
+        - -c
+        - |
+          airflow db init
+          airflow users create             --username admin             --firstname Admin             --lastname User             --role Admin             --email admin@dataplatform.local             --password admin123
+        env:
+        - name: AIRFLOW__CORE__SQL_ALCHEMY_CONN
+          value: "postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow"
+        - name: AIRFLOW__CORE__FERNET_KEY
+          value: "Wm5ldF9rZXlfaGVyZV9iYXNlNjRfZW5jb2RlZA=="
+      restartPolicy: OnFailure
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-webserver
+  namespace: data-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+      component: webserver
+  template:
+    metadata:
+      labels:
+        app: airflow
+        component: webserver
+    spec:
+      containers:
+      - name: airflow-webserver
+        image: apache/airflow:2.7.1-python3.10
+        command: ["airflow", "webserver"]
+        env:
+        - name: AIRFLOW__CORE__SQL_ALCHEMY_CONN
+          value: "postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow"
+        - name: AIRFLOW__CELERY__BROKER_URL
+          value: "redis://:redispassword123@redis:6379/1"
+        - name: AIRFLOW__CORE__FERNET_KEY
+          value: "Wm5ldF9rZXlfaGVyZV9iYXNlNjRfZW5jb2RlZA=="
+        ports:
+        - containerPort: 8080
+          name: webserver
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-scheduler
+  namespace: data-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+      component: scheduler
+  template:
+    metadata:
+      labels:
+        app: airflow
+        component: scheduler
+    spec:
+      containers:
+      - name: airflow-scheduler
+        image: apache/airflow:2.7.1-python3.10
+        command: ["airflow", "scheduler"]
+        env:
+        - name: AIRFLOW__CORE__SQL_ALCHEMY_CONN
+          value: "postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow"
+        - name: AIRFLOW__CELERY__BROKER_URL
+          value: "redis://:redispassword123@redis:6379/1"
+        - name: AIRFLOW__CORE__FERNET_KEY
+          value: "Wm5ldF9rZXlfaGVyZV9iYXNlNjRfZW5jb2RlZA=="
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-webserver
+  namespace: data-platform
+spec:
+  selector:
+    app: airflow
+    component: webserver
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP
