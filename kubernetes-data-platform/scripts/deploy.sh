@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deployment Script for Kubernetes Data Platform
+# Production Deployment Script
 
 set -e
 
@@ -7,7 +7,14 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
+PURPLE='\033[0;35m'
 NC='\033[0m'
+
+print_header() {
+    echo -e "${PURPLE}================================================================${NC}"
+    echo -e "${PURPLE}  $1${NC}"
+    echo -e "${PURPLE}================================================================${NC}"
+}
 
 print_status() {
     echo -e "${BLUE}[INFO]${NC} $1"
@@ -66,8 +73,7 @@ wait_for_job() {
     fi
 }
 
-echo "🚀 Deploying Kubernetes Data Platform"
-echo "====================================="
+print_header "Production Kubernetes Data Platform Deployment"
 
 # Check if kubectl is available
 if ! command -v kubectl &> /dev/null; then
@@ -84,42 +90,39 @@ fi
 print_success "Connected to Kubernetes cluster"
 
 # Deploy in order
-print_status "Step 1: Deploying PostgreSQL..."
+print_header "Step 1: Deploying PostgreSQL Database"
 kubectl apply -f deployment/01-postgres-ha.yaml
 wait_for_statefulset "postgres" "data-platform" 600
 wait_for_job "postgres-init" "data-platform" 300
 
-print_status "Step 2: Deploying Redis..."
+print_header "Step 2: Deploying Redis Message Broker"
 kubectl apply -f deployment/02-redis.yaml
 wait_for_deployment "redis-master" "data-platform" 300
 
-print_status "Step 3: Deploying Monitoring..."
+print_header "Step 3: Deploying Monitoring Stack"
 kubectl apply -f deployment/03-prometheus.yaml
 kubectl apply -f deployment/04-grafana.yaml
 wait_for_deployment "prometheus" "data-platform" 300
 wait_for_deployment "grafana" "data-platform" 300
 
-print_status "Step 4: Deploying Airflow..."
+print_header "Step 4: Deploying Apache Airflow 2.8.1"
 kubectl apply -f deployment/05-airflow.yaml
-wait_for_job "airflow-db-init" "data-platform" 600
+wait_for_job "airflow-db-init-fixed" "data-platform" 600
 wait_for_deployment "airflow-webserver" "data-platform" 600
 wait_for_deployment "airflow-scheduler" "data-platform" 300
 wait_for_deployment "airflow-worker" "data-platform" 300
 wait_for_deployment "airflow-flower" "data-platform" 300
 
-print_status "Step 5: Deploying MinIO..."
+print_header "Step 5: Deploying MinIO Object Storage"
 kubectl apply -f deployment/06-minio.yaml
 wait_for_deployment "minio" "data-platform" 300
 
-print_success "🎉 Data Platform deployment completed!"
+print_header "🎉 Production Deployment Completed!"
 echo ""
+print_success "All services deployed successfully!"
 print_status "Next steps:"
 echo "  1. Run './scripts/check-health.sh' to verify all services"
-echo "  2. Run './scripts/port-forward.sh' to access services"
+echo "  2. Run './scripts/fix-airflow-secrets.sh' to secure Airflow"
+echo "  3. Run './scripts/expose-services.sh' to enable external access"
 echo ""
-print_status "Services will be available at:"
-echo "  📊 Grafana:    http://localhost:3000 (admin/admin123)"
-echo "  ⚙️  Airflow:    http://localhost:8080 (admin/admin123)"
-echo "  🌸 Flower:     http://localhost:5555 (Celery monitoring)"
-echo "  💾 MinIO:      http://localhost:9001 (minioadmin/minioadmin123)"
-echo "  🔍 Prometheus: http://localhost:9090"
+print_status "Or run './scripts/complete-setup.sh' for automated post-deployment setup"

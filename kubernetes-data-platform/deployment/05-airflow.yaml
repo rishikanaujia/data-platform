@@ -1,9 +1,12 @@
-# Fixed Apache Airflow 2.8.1 Configuration - Removed Duplicate Sections
+# Apache Airflow 2.8.1 Production Configuration - All Fixes Applied
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: airflow-config
   namespace: data-platform
+  labels:
+    app: airflow
+    tier: orchestration
 data:
   airflow.cfg: |
     [core]
@@ -79,7 +82,6 @@ data:
     web_server_worker_timeout = 120
     worker_refresh_batch_size = 1
     worker_refresh_interval = 6000
-    secret_key = temporary_key
     workers = 4
     worker_class = sync
     access_logfile = -
@@ -122,7 +124,7 @@ data:
     smtp_user =
     smtp_password =
     smtp_port = 587
-    smtp_mail_from = airflow@example.com
+    smtp_mail_from = airflow@dataplatform.local
     smtp_timeout = 30
     smtp_retry_limit = 5
 
@@ -184,6 +186,8 @@ kind: Secret
 metadata:
   name: airflow-secret
   namespace: data-platform
+  labels:
+    app: airflow
 type: Opaque
 data:
   fernet-key: Wm5ldF9rZXlfaGVyZV9iYXNlNjRfZW5jb2RlZA==
@@ -195,8 +199,15 @@ kind: Job
 metadata:
   name: airflow-db-init-fixed
   namespace: data-platform
+  labels:
+    app: airflow
+    job: db-init
 spec:
   template:
+    metadata:
+      labels:
+        app: airflow
+        job: db-init
     spec:
       initContainers:
       - name: wait-for-postgres
@@ -239,6 +250,11 @@ spec:
           value: "CeleryExecutor"
         - name: AIRFLOW__CORE__LOAD_EXAMPLES
           value: "False"
+        - name: AIRFLOW__WEBSERVER__SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: webserver-secret-key
         volumeMounts:
         - name: airflow-config
           mountPath: /opt/airflow/airflow.cfg
@@ -262,6 +278,10 @@ kind: Deployment
 metadata:
   name: airflow-webserver
   namespace: data-platform
+  labels:
+    app: airflow
+    component: webserver
+    tier: orchestration
 spec:
   replicas: 1
   selector:
@@ -273,6 +293,7 @@ spec:
       labels:
         app: airflow
         component: webserver
+        tier: orchestration
     spec:
       containers:
       - name: airflow-webserver
@@ -299,6 +320,11 @@ spec:
           value: "CeleryExecutor"
         - name: AIRFLOW__CORE__LOAD_EXAMPLES
           value: "False"
+        - name: AIRFLOW__WEBSERVER__SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: webserver-secret-key
         ports:
         - containerPort: 8080
           name: webserver
@@ -345,6 +371,10 @@ kind: Deployment
 metadata:
   name: airflow-scheduler
   namespace: data-platform
+  labels:
+    app: airflow
+    component: scheduler
+    tier: orchestration
 spec:
   replicas: 1
   selector:
@@ -356,6 +386,7 @@ spec:
       labels:
         app: airflow
         component: scheduler
+        tier: orchestration
     spec:
       containers:
       - name: airflow-scheduler
@@ -382,6 +413,11 @@ spec:
           value: "CeleryExecutor"
         - name: AIRFLOW__CORE__LOAD_EXAMPLES
           value: "False"
+        - name: AIRFLOW__WEBSERVER__SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: webserver-secret-key
         volumeMounts:
         - name: airflow-config
           mountPath: /opt/airflow/airflow.cfg
@@ -419,6 +455,10 @@ kind: Deployment
 metadata:
   name: airflow-worker
   namespace: data-platform
+  labels:
+    app: airflow
+    component: worker
+    tier: orchestration
 spec:
   replicas: 2
   selector:
@@ -430,6 +470,7 @@ spec:
       labels:
         app: airflow
         component: worker
+        tier: orchestration
     spec:
       containers:
       - name: airflow-worker
@@ -456,6 +497,11 @@ spec:
           value: "CeleryExecutor"
         - name: AIRFLOW__CELERY__WORKER_CONCURRENCY
           value: "16"
+        - name: AIRFLOW__WEBSERVER__SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: webserver-secret-key
         volumeMounts:
         - name: airflow-config
           mountPath: /opt/airflow/airflow.cfg
@@ -483,6 +529,10 @@ kind: Deployment
 metadata:
   name: airflow-flower
   namespace: data-platform
+  labels:
+    app: airflow
+    component: flower
+    tier: monitoring
 spec:
   replicas: 1
   selector:
@@ -494,6 +544,7 @@ spec:
       labels:
         app: airflow
         component: flower
+        tier: monitoring
     spec:
       containers:
       - name: airflow-flower
@@ -520,6 +571,11 @@ spec:
           value: "0.0.0.0"
         - name: AIRFLOW__CELERY__FLOWER_PORT
           value: "5555"
+        - name: AIRFLOW__WEBSERVER__SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: webserver-secret-key
         ports:
         - containerPort: 5555
           name: flower
@@ -552,7 +608,6 @@ spec:
           name: airflow-config
 
 ---
-# Fixed Persistent Volume Claims for MicroK8s
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -561,18 +616,20 @@ metadata:
 spec:
   accessModes:
   - ReadWriteOnce
-  storageClassName: microk8s-hostpath
+  storageClassName: standard
   resources:
     requests:
       storage: 10Gi
 
 ---
-# Services
 apiVersion: v1
 kind: Service
 metadata:
   name: airflow-webserver
   namespace: data-platform
+  labels:
+    app: airflow
+    component: webserver
 spec:
   selector:
     app: airflow
@@ -589,6 +646,9 @@ kind: Service
 metadata:
   name: airflow-flower
   namespace: data-platform
+  labels:
+    app: airflow
+    component: flower
 spec:
   selector:
     app: airflow
@@ -605,6 +665,9 @@ kind: Service
 metadata:
   name: airflow-worker
   namespace: data-platform
+  labels:
+    app: airflow
+    component: worker
 spec:
   selector:
     app: airflow

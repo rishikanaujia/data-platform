@@ -1,8 +1,27 @@
 #!/bin/bash
-# Port Forward Script for Easy Access
+# Port Forward Script for Local Access
 
-echo "🌐 Starting port-forwards for Data Platform services..."
-echo "======================================================="
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+PURPLE='\033[0;35m'
+NC='\033[0m'
+
+print_header() {
+    echo -e "${PURPLE}================================================================${NC}"
+    echo -e "${PURPLE}  $1${NC}"
+    echo -e "${PURPLE}================================================================${NC}"
+}
+
+print_success() {
+    echo -e "${GREEN}✅ $1${NC}"
+}
+
+print_info() {
+    echo -e "${BLUE}ℹ️  $1${NC}"
+}
+
+print_header "Starting Local Access Port Forwards"
 
 # Function to start port-forward in background
 start_port_forward() {
@@ -11,7 +30,7 @@ start_port_forward() {
     local remote_port=$3
     local namespace=${4:-data-platform}
 
-    echo "Starting $service on localhost:$local_port"
+    print_info "Starting $service on localhost:$local_port"
     kubectl port-forward svc/$service $local_port:$remote_port -n $namespace &
     sleep 2
 }
@@ -29,17 +48,27 @@ start_port_forward "minio-console" 9001 9001
 start_port_forward "prometheus" 9090 9090
 
 echo ""
-echo "✅ Port-forwards started!"
+print_success "All port-forwards started successfully!"
 echo ""
-echo "Access your services at:"
-echo "  🔍 Grafana (admin/admin123):     http://localhost:3000"
-echo "  ⚙️  Airflow (admin/admin123):     http://localhost:8080"
-echo "  🌸 Flower (Celery Monitor):      http://localhost:5555"
-echo "  💾 MinIO (minioadmin/minioadmin123): http://localhost:9001"
-echo "  📈 Prometheus:                   http://localhost:9090"
+print_header "🌐 Access Your Services"
 echo ""
-echo "Press Ctrl+C to stop all port-forwards"
+echo "  🔍 Grafana (Dashboards):         http://localhost:3000"
+echo "      Username: admin | Password: admin123"
+echo ""
+echo "  ⚙️  Airflow (Orchestration):      http://localhost:8080"
+echo "      Username: admin | Password: admin123"
+echo ""
+echo "  🌸 Flower (Worker Monitoring):   http://localhost:5555"
+echo "      Real-time Celery worker monitoring"
+echo ""
+echo "  💾 MinIO (Object Storage):       http://localhost:9001"
+echo "      Username: minioadmin | Password: minioadmin123"
+echo ""
+echo "  📈 Prometheus (Metrics):         http://localhost:9090"
+echo "      Raw metrics and monitoring data"
+echo ""
+print_info "Press Ctrl+C to stop all port-forwards"
 
 # Wait for Ctrl+C
-trap 'echo "Stopping port-forwards..."; jobs -p | xargs -r kill; exit 0' INT
+trap 'echo ""; echo "Stopping all port-forwards..."; jobs -p | xargs -r kill; exit 0' INT
 wait

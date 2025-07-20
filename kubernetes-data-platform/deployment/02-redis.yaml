@@ -1,9 +1,13 @@
-# Redis Configuration
+# Redis Configuration for Message Broker
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: redis-master
   namespace: data-platform
+  labels:
+    app: redis
+    role: master
+    tier: cache
 spec:
   replicas: 1
   selector:
@@ -15,6 +19,7 @@ spec:
       labels:
         app: redis
         role: master
+        tier: cache
     spec:
       containers:
       - name: redis
@@ -34,6 +39,20 @@ spec:
           limits:
             memory: "512Mi"
             cpu: "500m"
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 5
       volumes:
       - name: redis-data
         persistentVolumeClaim:
@@ -59,6 +78,9 @@ kind: Service
 metadata:
   name: redis
   namespace: data-platform
+  labels:
+    app: redis
+    role: master
 spec:
   selector:
     app: redis
@@ -66,4 +88,5 @@ spec:
   ports:
   - port: 6379
     targetPort: 6379
+    name: redis
   type: ClusterIP
