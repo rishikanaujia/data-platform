@@ -1,4 +1,4 @@
-# Prometheus Configuration
+# Prometheus Monitoring Configuration
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -8,10 +8,26 @@ data:
   prometheus.yml: |
     global:
       scrape_interval: 15s
+      evaluation_interval: 15s
+
+    rule_files:
+      # - "alert_rules.yml"
+
     scrape_configs:
     - job_name: 'prometheus'
       static_configs:
       - targets: ['localhost:9090']
+
+    - job_name: 'kubernetes-pods'
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+          - data-platform
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
 
 ---
 apiVersion: apps/v1
@@ -19,6 +35,9 @@ kind: Deployment
 metadata:
   name: prometheus
   namespace: data-platform
+  labels:
+    app: prometheus
+    tier: monitoring
 spec:
   replicas: 1
   selector:
@@ -28,6 +47,7 @@ spec:
     metadata:
       labels:
         app: prometheus
+        tier: monitoring
     spec:
       containers:
       - name: prometheus
@@ -36,6 +56,9 @@ spec:
         - --config.file=/etc/prometheus/prometheus.yml
         - --storage.tsdb.path=/prometheus
         - --storage.tsdb.retention.time=15d
+        - --web.console.libraries=/etc/prometheus/console_libraries
+        - --web.console.templates=/etc/prometheus/consoles
+        - --web.enable-lifecycle
         ports:
         - containerPort: 9090
           name: web
@@ -51,6 +74,18 @@ spec:
           limits:
             memory: "2Gi"
             cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /-/healthy
+            port: 9090
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: 9090
+          initialDelaySeconds: 5
+          periodSeconds: 5
       volumes:
       - name: prometheus-config
         configMap:
@@ -79,10 +114,13 @@ kind: Service
 metadata:
   name: prometheus
   namespace: data-platform
+  labels:
+    app: prometheus
 spec:
   selector:
     app: prometheus
   ports:
   - port: 9090
     targetPort: 9090
+    name: web
   type: ClusterIP

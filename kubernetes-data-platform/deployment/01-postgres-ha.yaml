@@ -5,6 +5,7 @@ metadata:
   name: data-platform
   labels:
     name: data-platform
+    environment: production
 
 ---
 apiVersion: v1
@@ -22,6 +23,10 @@ kind: StatefulSet
 metadata:
   name: postgres-primary
   namespace: data-platform
+  labels:
+    app: postgres
+    role: primary
+    tier: database
 spec:
   serviceName: postgres-primary
   replicas: 1
@@ -34,6 +39,7 @@ spec:
       labels:
         app: postgres
         role: primary
+        tier: database
     spec:
       containers:
       - name: postgres
@@ -95,6 +101,9 @@ kind: Service
 metadata:
   name: postgres-primary
   namespace: data-platform
+  labels:
+    app: postgres
+    role: primary
 spec:
   selector:
     app: postgres
@@ -102,6 +111,7 @@ spec:
   ports:
   - port: 5432
     targetPort: 5432
+    name: postgres
   type: ClusterIP
 
 ---
@@ -110,6 +120,9 @@ kind: Job
 metadata:
   name: postgres-init
   namespace: data-platform
+  labels:
+    app: postgres
+    job: init
 spec:
   template:
     spec:
