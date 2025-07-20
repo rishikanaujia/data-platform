@@ -1,4 +1,4 @@
-# Advanced Apache Airflow 2.8.1 Configuration
+# Fixed Apache Airflow 2.8.1 Configuration - Removed Duplicate Sections
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -66,6 +66,7 @@ data:
     default_ram = 512
     default_disk = 512
     default_gpus = 0
+    allow_illegal_arguments = False
 
     [webserver]
     base_url = http://localhost:8080
@@ -125,50 +126,6 @@ data:
     smtp_timeout = 30
     smtp_retry_limit = 5
 
-    [sentry]
-    sentry_dsn =
-
-    [celery_kubernetes_executor]
-    kubernetes_queue = kubernetes
-
-    [kubernetes]
-    pod_template_file =
-    worker_container_repository = apache/airflow
-    worker_container_tag = 2.8.1-python3.11
-    namespace = data-platform
-    delete_worker_pods = True
-    delete_worker_pods_on_start = False
-    worker_pods_creation_batch_size = 1
-    multi_namespace_mode = False
-    in_cluster = True
-    cluster_context =
-    config_file =
-    kube_client_request_args =
-    enable_tcp_keepalive = True
-    tcp_keep_idle = 120
-    tcp_keep_intvl = 30
-    tcp_keep_cnt = 6
-
-    [kubernetes_secrets]
-
-    [kubernetes_environment_variables]
-
-    [kubernetes_labels]
-
-    [kubernetes_annotations]
-
-    [kubernetes_node_selectors]
-
-    [kubernetes_affinity]
-
-    [kubernetes_tolerations]
-
-    [hive]
-    default_hive_mapred_queue =
-
-    [webhdfs]
-    webhdfs_connection = webhdfs_default
-
     [logging]
     base_log_folder = /opt/airflow/logs
     remote_logging = False
@@ -216,79 +173,10 @@ data:
     auth_backends = airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
     maximum_page_limit = 100
     fallback_page_limit = 100
-    google_key_path =
-    google_scopes = https://www.googleapis.com/auth/cloud-platform
-    google_audience =
-    google_service_account_email =
-    google_impersonation_chain =
-
-    [lineage]
-    backend =
-
-    [atlas]
-    sasl_enabled = False
-    host =
-    port = 21000
-    username =
-    password =
-
-    [operators]
-    default_owner = airflow
-    default_cpus = 1
-    default_ram = 512
-    default_disk = 512
-    default_gpus = 0
-    allow_illegal_arguments = False
 
     [admin]
     hide_sensitive_variable_fields = True
     sensitive_variable_fields =
-
-    [elasticsearch]
-    host =
-    log_id_template = {dag_id}-{task_id}-{execution_date}-{try_number}
-    end_of_log_mark = end_of_log
-    frontend =
-    write_stdout = False
-    json_format = False
-    json_fields = asctime, filename, lineno, levelname, message
-
-    [elasticsearch_configs]
-    use_ssl = False
-    verify_certs = True
-
-    [kerberos]
-    ccache = /tmp/airflow_krb5_ccache
-    principal = airflow
-    reinit_frequency = 3600
-    kinit_path = kinit
-    keytab = airflow.keytab
-
-    [github_enterprise]
-    api_rev = v3
-
-    [google]
-    oauth2_provider_authority = https://accounts.google.com
-    oauth2_provider_revoke_endpoint = https://oauth2.googleapis.com/revoke
-    oauth2_provider_token_endpoint = https://oauth2.googleapis.com/token
-    oauth2_provider_authorization_endpoint = https://accounts.google.com/o/oauth2/auth
-
-    [google_cloud_platform]
-    gcp_service_account_keys =
-
-    [azure]
-
-    [dask]
-    cluster_address = 127.0.0.1:8786
-    tls_ca =
-    tls_cert =
-    tls_key =
-
-    [smart_sensor]
-    use_smart_sensor = False
-    shard_code_upper_limit = 10000
-    shards = 5
-    sensors_enabled = PokeOnlySensor
 
 ---
 apiVersion: v1
@@ -305,25 +193,24 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: airflow-db-init
+  name: airflow-db-init-fixed
   namespace: data-platform
 spec:
   template:
     spec:
       initContainers:
       - name: wait-for-postgres
-        image: postgres:15-alpine
+        image: busybox:1.35
         command:
-        - /bin/bash
+        - /bin/sh
         - -c
         - |
-          until pg_isready -h postgres-primary -p 5432 -U postgres; do
-            echo "Waiting for PostgreSQL..."
+          echo "Waiting for PostgreSQL to be ready..."
+          until nc -z postgres-primary 5432; do
+            echo "PostgreSQL not ready, waiting..."
             sleep 5
           done
-        env:
-        - name: PGPASSWORD
-          value: "password123"
+          echo "PostgreSQL is ready!"
       containers:
       - name: airflow-db-init
         image: apache/airflow:2.8.1-python3.11
@@ -331,18 +218,11 @@ spec:
         - /bin/bash
         - -c
         - |
-          # Wait for database
-          airflow db check
-
           # Initialize database
           airflow db init
 
           # Create admin user
           airflow users create             --username admin             --firstname Admin             --lastname User             --role Admin             --email admin@dataplatform.local             --password admin123
-
-          # Install additional packages
-          pip install --no-cache-dir             redis==4.6.0             celery[redis]==5.3.4             flower==2.0.1             psycopg2-binary==2.9.7             apache-airflow-providers-postgres==5.6.0             apache-airflow-providers-redis==3.4.0             apache-airflow-providers-celery==3.3.4
-
         env:
         - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
           value: "postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow"
@@ -359,14 +239,6 @@ spec:
           value: "CeleryExecutor"
         - name: AIRFLOW__CORE__LOAD_EXAMPLES
           value: "False"
-        - name: AIRFLOW__WEBSERVER__EXPOSE_CONFIG
-          value: "True"
-        - name: AIRFLOW__CORE__PARALLELISM
-          value: "32"
-        - name: AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG
-          value: "16"
-        - name: AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG
-          value: "16"
         volumeMounts:
         - name: airflow-config
           mountPath: /opt/airflow/airflow.cfg
@@ -391,7 +263,7 @@ metadata:
   name: airflow-webserver
   namespace: data-platform
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: airflow
@@ -402,15 +274,6 @@ spec:
         app: airflow
         component: webserver
     spec:
-      initContainers:
-      - name: wait-for-db-init
-        image: busybox:1.35
-        command:
-        - /bin/sh
-        - -c
-        - |
-          echo "Waiting for database initialization..."
-          sleep 30
       containers:
       - name: airflow-webserver
         image: apache/airflow:2.8.1-python3.11
@@ -418,9 +281,6 @@ spec:
         - /bin/bash
         - -c
         - |
-          # Install additional packages
-          pip install --no-cache-dir             redis==4.6.0             celery[redis]==5.3.4             flower==2.0.1             psycopg2-binary==2.9.7             apache-airflow-providers-postgres==5.6.0             apache-airflow-providers-redis==3.4.0             apache-airflow-providers-celery==3.3.4
-
           # Start webserver
           airflow webserver --port 8080
         env:
@@ -439,22 +299,6 @@ spec:
           value: "CeleryExecutor"
         - name: AIRFLOW__CORE__LOAD_EXAMPLES
           value: "False"
-        - name: AIRFLOW__WEBSERVER__EXPOSE_CONFIG
-          value: "True"
-        - name: AIRFLOW__CORE__PARALLELISM
-          value: "32"
-        - name: AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG
-          value: "16"
-        - name: AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG
-          value: "16"
-        - name: AIRFLOW__WEBSERVER__WORKERS
-          value: "4"
-        - name: AIRFLOW__WEBSERVER__WORKER_TIMEOUT
-          value: "120"
-        - name: AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT
-          value: "120"
-        - name: AIRFLOW__CELERY__WORKER_CONCURRENCY
-          value: "16"
         ports:
         - containerPort: 8080
           name: webserver
@@ -464,20 +308,18 @@ spec:
           subPath: airflow.cfg
         - name: airflow-logs
           mountPath: /opt/airflow/logs
-        - name: airflow-dags
-          mountPath: /opt/airflow/dags
         resources:
           requests:
             memory: "1Gi"
             cpu: "500m"
           limits:
             memory: "2Gi"
-            cpu: "1500m"
+            cpu: "1000m"
         livenessProbe:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 60
+          initialDelaySeconds: 120
           periodSeconds: 30
           timeoutSeconds: 10
           failureThreshold: 3
@@ -485,7 +327,7 @@ spec:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 30
+          initialDelaySeconds: 60
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
@@ -496,9 +338,6 @@ spec:
       - name: airflow-logs
         persistentVolumeClaim:
           claimName: airflow-logs-pvc
-      - name: airflow-dags
-        persistentVolumeClaim:
-          claimName: airflow-dags-pvc
 
 ---
 apiVersion: apps/v1
@@ -507,7 +346,7 @@ metadata:
   name: airflow-scheduler
   namespace: data-platform
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: airflow
@@ -525,9 +364,6 @@ spec:
         - /bin/bash
         - -c
         - |
-          # Install additional packages
-          pip install --no-cache-dir             redis==4.6.0             celery[redis]==5.3.4             flower==2.0.1             psycopg2-binary==2.9.7             apache-airflow-providers-postgres==5.6.0             apache-airflow-providers-redis==3.4.0             apache-airflow-providers-celery==3.3.4
-
           # Start scheduler
           airflow scheduler
         env:
@@ -546,42 +382,26 @@ spec:
           value: "CeleryExecutor"
         - name: AIRFLOW__CORE__LOAD_EXAMPLES
           value: "False"
-        - name: AIRFLOW__CORE__PARALLELISM
-          value: "32"
-        - name: AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG
-          value: "16"
-        - name: AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG
-          value: "16"
-        - name: AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL
-          value: "300"
-        - name: AIRFLOW__SCHEDULER__CATCHUP_BY_DEFAULT
-          value: "False"
-        - name: AIRFLOW__SCHEDULER__MAX_TIS_PER_QUERY
-          value: "512"
-        - name: AIRFLOW__SCHEDULER__PROCESSOR_POLL_INTERVAL
-          value: "1"
         volumeMounts:
         - name: airflow-config
           mountPath: /opt/airflow/airflow.cfg
           subPath: airflow.cfg
         - name: airflow-logs
           mountPath: /opt/airflow/logs
-        - name: airflow-dags
-          mountPath: /opt/airflow/dags
         resources:
           requests:
             memory: "1Gi"
             cpu: "500m"
           limits:
             memory: "2Gi"
-            cpu: "1500m"
+            cpu: "1000m"
         livenessProbe:
           exec:
             command:
             - /bin/bash
             - -c
             - "pgrep -f 'airflow scheduler'"
-          initialDelaySeconds: 60
+          initialDelaySeconds: 120
           periodSeconds: 30
           timeoutSeconds: 10
           failureThreshold: 3
@@ -592,9 +412,6 @@ spec:
       - name: airflow-logs
         persistentVolumeClaim:
           claimName: airflow-logs-pvc
-      - name: airflow-dags
-        persistentVolumeClaim:
-          claimName: airflow-dags-pvc
 
 ---
 apiVersion: apps/v1
@@ -603,7 +420,7 @@ metadata:
   name: airflow-worker
   namespace: data-platform
 spec:
-  replicas: 3
+  replicas: 2
   selector:
     matchLabels:
       app: airflow
@@ -621,9 +438,6 @@ spec:
         - /bin/bash
         - -c
         - |
-          # Install additional packages
-          pip install --no-cache-dir             redis==4.6.0             celery[redis]==5.3.4             flower==2.0.1             psycopg2-binary==2.9.7             apache-airflow-providers-postgres==5.6.0             apache-airflow-providers-redis==3.4.0             apache-airflow-providers-celery==3.3.4
-
           # Start celery worker
           airflow celery worker
         env:
@@ -642,18 +456,12 @@ spec:
           value: "CeleryExecutor"
         - name: AIRFLOW__CELERY__WORKER_CONCURRENCY
           value: "16"
-        - name: AIRFLOW__CELERY__WORKER_PREFETCH_MULTIPLIER
-          value: "1"
-        - name: AIRFLOW__CORE__PARALLELISM
-          value: "32"
         volumeMounts:
         - name: airflow-config
           mountPath: /opt/airflow/airflow.cfg
           subPath: airflow.cfg
         - name: airflow-logs
           mountPath: /opt/airflow/logs
-        - name: airflow-dags
-          mountPath: /opt/airflow/dags
         resources:
           requests:
             memory: "1Gi"
@@ -661,16 +469,6 @@ spec:
           limits:
             memory: "2Gi"
             cpu: "1000m"
-        livenessProbe:
-          exec:
-            command:
-            - /bin/bash
-            - -c
-            - "celery -A airflow.executors.celery_executor inspect active"
-          initialDelaySeconds: 60
-          periodSeconds: 30
-          timeoutSeconds: 10
-          failureThreshold: 3
       volumes:
       - name: airflow-config
         configMap:
@@ -678,9 +476,6 @@ spec:
       - name: airflow-logs
         persistentVolumeClaim:
           claimName: airflow-logs-pvc
-      - name: airflow-dags
-        persistentVolumeClaim:
-          claimName: airflow-dags-pvc
 
 ---
 apiVersion: apps/v1
@@ -707,9 +502,6 @@ spec:
         - /bin/bash
         - -c
         - |
-          # Install additional packages
-          pip install --no-cache-dir             redis==4.6.0             celery[redis]==5.3.4             flower==2.0.1             psycopg2-binary==2.9.7
-
           # Start flower
           airflow celery flower
         env:
@@ -746,13 +538,13 @@ spec:
           httpGet:
             path: /
             port: 5555
-          initialDelaySeconds: 60
+          initialDelaySeconds: 120
           periodSeconds: 30
         readinessProbe:
           httpGet:
             path: /
             port: 5555
-          initialDelaySeconds: 30
+          initialDelaySeconds: 60
           periodSeconds: 10
       volumes:
       - name: airflow-config
@@ -760,7 +552,7 @@ spec:
           name: airflow-config
 
 ---
-# Persistent Volume Claims for Airflow
+# Fixed Persistent Volume Claims for MicroK8s
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -768,22 +560,8 @@ metadata:
   namespace: data-platform
 spec:
   accessModes:
-  - ReadWriteMany
-  storageClassName: standard
-  resources:
-    requests:
-      storage: 20Gi
-
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: airflow-dags-pvc
-  namespace: data-platform
-spec:
-  accessModes:
-  - ReadWriteMany
-  storageClassName: standard
+  - ReadWriteOnce
+  storageClassName: microk8s-hostpath
   resources:
     requests:
       storage: 10Gi
