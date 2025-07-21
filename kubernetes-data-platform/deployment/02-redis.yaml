@@ -25,7 +25,7 @@ spec:
       - name: redis
         image: redis:7-alpine
         command: ["redis-server"]
-        args: ["--requirepass", "YX4sDK5Lpz10SNi4iGJnFTohIuHfzuhh"]
+        args: ["--requirepass", "redispassword123"]
         ports:
         - containerPort: 6379
           name: redis
@@ -43,8 +43,6 @@ spec:
           exec:
             command:
             - redis-cli
-            - -a
-            - "YX4sDK5Lpz10SNi4iGJnFTohIuHfzuhh"
             - ping
           initialDelaySeconds: 30
           periodSeconds: 10
@@ -69,7 +67,7 @@ metadata:
 spec:
   accessModes:
   - ReadWriteOnce
-  storageClassName: hostpath
+  storageClassName: standard
   resources:
     requests:
       storage: 10Gi

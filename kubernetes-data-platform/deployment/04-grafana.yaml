@@ -40,7 +40,7 @@ spec:
         image: grafana/grafana:latest
         env:
         - name: GF_SECURITY_ADMIN_PASSWORD
-          value: "4WgHI7oBjZjhWurC"
+          value: "admin123"
         - name: GF_USERS_ALLOW_SIGN_UP
           value: "false"
         - name: GF_INSTALL_PLUGINS
@@ -89,7 +89,7 @@ metadata:
 spec:
   accessModes:
   - ReadWriteOnce
-  storageClassName: hostpath
+  storageClassName: standard
   resources:
     requests:
       storage: 5Gi

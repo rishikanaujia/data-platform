@@ -15,7 +15,8 @@ metadata:
   namespace: data-platform
 type: Opaque
 data:
-  password: alh0TXpPTmZCaUdOQzlTaWpMbUZHbUpHeWRGRVF1cE0=
+  password: cGFzc3dvcmQxMjM=  # password123
+
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -89,7 +90,7 @@ spec:
       name: postgres-data
     spec:
       accessModes: ["ReadWriteOnce"]
-      storageClassName: hostpath
+      storageClassName: standard
       resources:
         requests:
           storage: 50Gi
@@ -130,10 +131,7 @@ spec:
         image: postgres:15-alpine
         env:
         - name: PGPASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: postgres-secret
-              key: password
+          value: "password123"
         command:
         - /bin/bash
         - -c

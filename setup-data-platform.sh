@@ -417,6 +417,9 @@ spec:
       - name: redis
         image: redis:7-alpine
         command: ["redis-server"]
+        env:
+        - name: REDIS_PASSWORD
+          value: "$REDIS_PASSWORD"
         args: ["--requirepass", "$REDIS_PASSWORD"]
         ports:
         - containerPort: 6379
@@ -1050,16 +1053,16 @@ spec:
           airflow webserver --port 8080
         env:
         - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
-          value: "postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow"
+          value: "postgresql+psycopg2://postgres:$POSTGRES_PASSWORD@postgres-primary:5432/airflow"
         - name: AIRFLOW__CORE__FERNET_KEY
           valueFrom:
             secretKeyRef:
               name: airflow-secret
               key: fernet-key
         - name: AIRFLOW__CELERY__BROKER_URL
-          value: "redis://:redispassword123@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CELERY__RESULT_BACKEND
-          value: "redis://:redispassword123@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CORE__EXECUTOR
           value: "CeleryExecutor"
         - name: AIRFLOW__CORE__LOAD_EXAMPLES
@@ -1143,16 +1146,16 @@ spec:
           airflow scheduler
         env:
         - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
-          value: "postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow"
+          value: "postgresql+psycopg2://postgres:$POSTGRES_PASSWORD@postgres-primary:5432/airflow"
         - name: AIRFLOW__CORE__FERNET_KEY
           valueFrom:
             secretKeyRef:
               name: airflow-secret
               key: fernet-key
         - name: AIRFLOW__CELERY__BROKER_URL
-          value: "redis://:redispassword123@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CELERY__RESULT_BACKEND
-          value: "redis://:redispassword123@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CORE__EXECUTOR
           value: "CeleryExecutor"
         - name: AIRFLOW__CORE__LOAD_EXAMPLES
@@ -1301,16 +1304,16 @@ spec:
           airflow celery flower
         env:
         - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
-          value: "postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow"
+          value: "postgresql+psycopg2://postgres:$POSTGRES_PASSWORD@postgres-primary:5432/airflow"
         - name: AIRFLOW__CORE__FERNET_KEY
           valueFrom:
             secretKeyRef:
               name: airflow-secret
               key: fernet-key
         - name: AIRFLOW__CELERY__BROKER_URL
-          value: "redis://:redispassword123@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CELERY__RESULT_BACKEND
-          value: "redis://:redispassword123@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CELERY__FLOWER_HOST
           value: "0.0.0.0"
         - name: AIRFLOW__CELERY__FLOWER_PORT
