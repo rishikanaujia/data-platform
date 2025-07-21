@@ -103,7 +103,7 @@ metadata:
 spec:
   accessModes:
   - ReadWriteOnce
-  storageClassName: standard
+  storageClassName: hostpath
   resources:
     requests:
       storage: 20Gi

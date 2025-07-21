@@ -46,11 +46,131 @@ print_feature() {
 PROJECT_NAME="kubernetes-data-platform"
 PROJECT_DIR=$(pwd)/$PROJECT_NAME
 
+# ADD THESE LINES HERE ⬇️
+# Global variables for secure credentials
+POSTGRES_PASSWORD=""
+REDIS_PASSWORD=""
+MINIO_ROOT_PASSWORD=""
+AIRFLOW_ADMIN_PASSWORD=""
+GRAFANA_ADMIN_PASSWORD=""
+FERNET_KEY=""
+WEBSERVER_SECRET_KEY=""
+
+
+# Enhanced environment validation
+validate_environment() {
+    print_info "🔍 Validating environment and dependencies..."
+
+    # Check required commands
+    local required_commands=("kubectl" "openssl" "python3" "base64")
+    local missing_commands=()
+
+    for cmd in "${required_commands[@]}"; do
+        if ! command -v "$cmd" &>/dev/null; then
+            missing_commands+=("$cmd")
+        fi
+    done
+
+    if [ ${#missing_commands[@]} -gt 0 ]; then
+        print_error "Missing required commands: ${missing_commands[*]}"
+        print_info "Please install missing commands and retry"
+        exit 1
+    fi
+
+    # Check kubectl connectivity
+    if ! kubectl cluster-info &>/dev/null; then
+        print_error "Cannot connect to Kubernetes cluster"
+        print_info "Please check your kubeconfig and cluster status"
+        exit 1
+    fi
+
+    # Validate Python cryptography
+    if ! python3 -c "from cryptography.fernet import Fernet" 2>/dev/null; then
+        print_error "Python cryptography library not available"
+        print_info "Install with: pip3 install cryptography"
+        exit 1
+    fi
+
+    print_success "Environment validation passed"
+}
+
+# Generate cryptographically secure secrets
+generate_secure_secrets() {
+    print_info "🔐 Generating cryptographically secure secrets..."
+
+    # Generate secure passwords (32 chars, URL-safe)
+    POSTGRES_PASSWORD=$(openssl rand -base64 32 | tr -d '/+' | cut -c1-32)
+    REDIS_PASSWORD=$(openssl rand -base64 32 | tr -d '/+' | cut -c1-32)
+    MINIO_ROOT_PASSWORD=$(openssl rand -base64 32 | tr -d '/+' | cut -c1-32)
+    AIRFLOW_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
+    GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
+
+    # Generate Airflow-specific secrets
+    FERNET_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+    WEBSERVER_SECRET_KEY=$(openssl rand -hex 32)
+
+    # Validate all secrets were generated
+    local secrets=("POSTGRES_PASSWORD" "REDIS_PASSWORD" "MINIO_ROOT_PASSWORD" "AIRFLOW_ADMIN_PASSWORD" "GRAFANA_ADMIN_PASSWORD" "FERNET_KEY" "WEBSERVER_SECRET_KEY")
+    for secret in "${secrets[@]}"; do
+        if [ -z "${!secret}" ]; then
+            print_error "Failed to generate $secret"
+            exit 1
+        fi
+    done
+
+    print_success "All secure secrets generated successfully"
+}
+
+# Save credentials securely
+save_credentials() {
+    local credentials_file="credentials.env"
+
+    print_info "💾 Saving credentials to $credentials_file..."
+
+    cat > "$credentials_file" << EOF
+# Kubernetes Data Platform Credentials
+# Generated: $(date)
+# KEEP THIS FILE SECURE AND DO NOT COMMIT TO VERSION CONTROL
+
+# Database
+POSTGRES_USERNAME=postgres
+POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+
+# Redis
+REDIS_PASSWORD=$REDIS_PASSWORD
+
+# MinIO
+MINIO_ROOT_USER=minioadmin
+MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD
+
+# Airflow
+AIRFLOW_ADMIN_USERNAME=admin
+AIRFLOW_ADMIN_PASSWORD=$AIRFLOW_ADMIN_PASSWORD
+AIRFLOW_FERNET_KEY=$FERNET_KEY
+
+# Grafana
+GRAFANA_ADMIN_USERNAME=admin
+GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD
+EOF
+
+    chmod 600 "$credentials_file"
+
+    # Create .gitignore to prevent accidental commits
+    echo "credentials.env" > .gitignore
+    echo "*.env" >> .gitignore
+    echo ".env*" >> .gitignore
+
+    print_success "Credentials saved to $credentials_file (permissions: 600)"
+    print_warning "🔒 Keep this file secure and do not commit to version control!"
+}
+
 print_header "Kubernetes Data Platform - Production Ready v3.0"
 print_feature "Apache Airflow 2.8.1 • CeleryExecutor • External Access • Auto-Security"
 
 # Detect Kubernetes environment
 detect_k8s_env() {
+    print_info "🔍 Detecting Kubernetes environment..."
+
     if command -v microk8s &> /dev/null; then
         K8S_TYPE="microk8s"
         STORAGE_CLASS="microk8s-hostpath"
@@ -64,6 +184,24 @@ detect_k8s_env() {
         STORAGE_CLASS="standard"
         print_info "Using generic Kubernetes configuration"
     fi
+
+    # SECURITY FIX: Validate storage class exists
+    if ! kubectl get storageclass "$STORAGE_CLASS" &>/dev/null; then
+        print_warning "Storage class '$STORAGE_CLASS' not found"
+        print_info "Available storage classes:"
+        kubectl get storageclass
+
+        local available_sc=$(kubectl get storageclass -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [ -n "$available_sc" ]; then
+            STORAGE_CLASS="$available_sc"
+            print_info "Using alternative storage class: $STORAGE_CLASS"
+        else
+            print_error "No storage classes available"
+            exit 1
+        fi
+    fi
+
+    print_success "Storage class validated: $STORAGE_CLASS"
 }
 
 # Create project structure
@@ -113,8 +251,7 @@ metadata:
   namespace: data-platform
 type: Opaque
 data:
-  password: cGFzc3dvcmQxMjM=  # password123
-
+  password: $(echo -n "$POSTGRES_PASSWORD" | base64 -w 0)
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -229,7 +366,10 @@ spec:
         image: postgres:15-alpine
         env:
         - name: PGPASSWORD
-          value: "password123"
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: password
         command:
         - /bin/bash
         - -c
@@ -277,7 +417,7 @@ spec:
       - name: redis
         image: redis:7-alpine
         command: ["redis-server"]
-        args: ["--requirepass", "redispassword123"]
+        args: ["--requirepass", "$REDIS_PASSWORD"]
         ports:
         - containerPort: 6379
           name: redis
@@ -295,6 +435,8 @@ spec:
           exec:
             command:
             - redis-cli
+            - -a
+            - "$REDIS_PASSWORD"
             - ping
           initialDelaySeconds: 30
           periodSeconds: 10
@@ -520,7 +662,7 @@ spec:
         image: grafana/grafana:latest
         env:
         - name: GF_SECURITY_ADMIN_PASSWORD
-          value: "admin123"
+          value: "$GRAFANA_ADMIN_PASSWORD"
         - name: GF_USERS_ALLOW_SIGN_UP
           value: "false"
         - name: GF_INSTALL_PLUGINS
@@ -633,16 +775,15 @@ data:
     compress_serialized_dags = False
 
     [database]
-    sql_alchemy_conn = postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow
-    sql_alchemy_pool_size = 10
+    sql_alchemy_conn = postgresql+psycopg2://postgres:$POSTGRES_PASSWORD@postgres-primary:5432/airflow
     sql_alchemy_max_overflow = 20
     sql_alchemy_pool_recycle = 1800
     sql_alchemy_pool_pre_ping = True
     sql_alchemy_schema =
 
     [celery]
-    broker_url = redis://:redispassword123@redis:6379/1
-    result_backend = redis://:redispassword123@redis:6379/1
+    broker_url = redis://:$REDIS_PASSWORD@redis:6379/1
+    result_backend = redis://:$REDIS_PASSWORD@redis:6379/1
     flower_host = 0.0.0.0
     flower_url_prefix =
     flower_port = 5555
@@ -787,8 +928,8 @@ metadata:
     app: airflow
 type: Opaque
 data:
-  fernet-key: Wm5ldF9rZXlfaGVyZV9iYXNlNjRfZW5jb2RlZA==
-  webserver-secret-key: dGVtcG9yYXJ5X2tleQ==
+  fernet-key: $(echo -n "$FERNET_KEY" | base64 -w 0)
+  webserver-secret-key: $(echo -n "$WEBSERVER_SECRET_KEY" | base64 -w 0)
 
 ---
 apiVersion: batch/v1
@@ -836,7 +977,7 @@ spec:
             --lastname User \
             --role Admin \
             --email admin@dataplatform.local \
-            --password admin123
+            --password "$AIRFLOW_ADMIN_PASSWORD"
         env:
         - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
           value: "postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow"
@@ -1317,7 +1458,7 @@ spec:
         - name: MINIO_ROOT_USER
           value: "minioadmin"
         - name: MINIO_ROOT_PASSWORD
-          value: "minioadmin123"
+          value: "$MINIO_ROOT_PASSWORD"
         ports:
         - containerPort: 9000
           name: api
@@ -2719,12 +2860,15 @@ EOF
 
 # Main execution function
 main() {
+    validate_environment          # ADD THIS LINE
     detect_k8s_env
+    generate_secure_secrets      # ADD THIS LINE
     create_project_structure
     create_all_deployments
     create_management_scripts
     create_post_deployment_scripts
     create_documentation
+    save_credentials            # ADD THIS LINE
 
     print_header "🎉 Production Platform Setup Complete!"
 

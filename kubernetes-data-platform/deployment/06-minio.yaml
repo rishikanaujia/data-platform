@@ -30,7 +30,7 @@ spec:
         - name: MINIO_ROOT_USER
           value: "minioadmin"
         - name: MINIO_ROOT_PASSWORD
-          value: "minioadmin123"
+          value: "zWLjuay9mPMcAsrU8pnBJqMseMRZGW2R"
         ports:
         - containerPort: 9000
           name: api
@@ -72,7 +72,7 @@ metadata:
 spec:
   accessModes:
   - ReadWriteOnce
-  storageClassName: standard
+  storageClassName: hostpath
   resources:
     requests:
       storage: 50Gi
