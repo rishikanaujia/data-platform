@@ -312,6 +312,7 @@ spec:
             - postgres
           initialDelaySeconds: 30
           periodSeconds: 10
+
         readinessProbe:
           exec:
             command:
@@ -447,6 +448,8 @@ spec:
           exec:
             command:
             - redis-cli
+            - -a
+            - "$REDIS_PASSWORD"
             - ping
           initialDelaySeconds: 5
           periodSeconds: 5
