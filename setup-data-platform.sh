@@ -924,6 +924,11 @@ data:
     hide_sensitive_variable_fields = True
     sensitive_variable_fields =
 
+    [triggerer]
+    default_capacity = 1000
+    job_heartbeat_sec = 5
+    heartbeat_sec = 5
+
 ---
 apiVersion: v1
 kind: Secret
@@ -1356,6 +1361,100 @@ spec:
       - name: airflow-config
         configMap:
           name: airflow-config
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-triggerer
+  namespace: data-platform
+  labels:
+    app: airflow
+    component: triggerer
+    tier: orchestration
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+      component: triggerer
+  template:
+    metadata:
+      labels:
+        app: airflow
+        component: triggerer
+        tier: orchestration
+    spec:
+      containers:
+      - name: airflow-triggerer
+        image: apache/airflow:2.8.1-python3.11
+        command:
+        - /bin/bash
+        - -c
+        - |
+          # Start triggerer
+          airflow triggerer
+        env:
+        - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+          value: "postgresql+psycopg2://postgres:$POSTGRES_PASSWORD@postgres-primary:5432/airflow"
+        - name: AIRFLOW__CORE__FERNET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: fernet-key
+        - name: AIRFLOW__CELERY__BROKER_URL
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
+        - name: AIRFLOW__CELERY__RESULT_BACKEND
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
+        - name: AIRFLOW__CORE__EXECUTOR
+          value: "CeleryExecutor"
+        - name: AIRFLOW__CORE__LOAD_EXAMPLES
+          value: "False"
+        - name: AIRFLOW__WEBSERVER__SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: webserver-secret-key
+        volumeMounts:
+        - name: airflow-config
+          mountPath: /opt/airflow/airflow.cfg
+          subPath: airflow.cfg
+        - name: airflow-logs
+          mountPath: /opt/airflow/logs
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          exec:
+            command:
+            - /bin/bash
+            - -c
+            - "ps aux | grep -v grep | grep 'airflow triggerer'"
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - /bin/bash
+            - -c
+            - "ps aux | grep -v grep | grep 'airflow triggerer'"
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: airflow-config
+        configMap:
+          name: airflow-config
+      - name: airflow-logs
+        persistentVolumeClaim:
+          claimName: airflow-logs-pvc
 
 ---
 apiVersion: v1
@@ -1795,6 +1894,7 @@ wait_for_deployment "airflow-webserver" "data-platform" 600
 wait_for_deployment "airflow-scheduler" "data-platform" 300
 wait_for_deployment "airflow-worker" "data-platform" 300
 wait_for_deployment "airflow-flower" "data-platform" 300
+wait_for_deployment "airflow-triggerer" "data-platform" 300
 
 print_header "Step 5: Deploying MinIO Object Storage"
 kubectl apply -f deployment/06-minio.yaml
@@ -1926,6 +2026,7 @@ AIRFLOW_WEBSERVER=$(kubectl get pods -n data-platform -l component=webserver --n
 AIRFLOW_SCHEDULER=$(kubectl get pods -n data-platform -l component=scheduler --no-headers 2>/dev/null | grep "Running" | wc -l)
 AIRFLOW_WORKERS=$(kubectl get pods -n data-platform -l component=worker --no-headers 2>/dev/null | grep "Running" | wc -l)
 AIRFLOW_FLOWER=$(kubectl get pods -n data-platform -l component=flower --no-headers 2>/dev/null | grep "Running" | wc -l)
+AIRFLOW_TRIGGERER=$(kubectl get pods -n data-platform -l component=triggerer --no-headers 2>/dev/null | grep "Running" | wc -l)
 
 if [ "$AIRFLOW_WEBSERVER" -eq 1 ]; then
     print_success "Airflow Webserver is healthy"
@@ -1952,6 +2053,13 @@ if [ "$AIRFLOW_FLOWER" -eq 1 ]; then
 else
     print_error "Flower monitoring issues detected"
 fi
+
+if [ "$AIRFLOW_TRIGGERER" -eq 1 ]; then
+    print_success "Airflow Triggerer is healthy"
+else
+    print_error "Airflow Triggerer issues detected"
+fi
+
 
 # MinIO
 MINIO_STATUS=$(kubectl get pods -n data-platform -l app=minio --no-headers 2>/dev/null | grep "Running" | wc -l)
