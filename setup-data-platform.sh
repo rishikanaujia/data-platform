@@ -1189,13 +1189,11 @@ spec:
         livenessProbe:
           exec:
             command:
-            - /bin/bash
-            - -c
-            - "pgrep -f 'airflow scheduler'"
+            - test
+            - -f
+            - /opt/airflow/logs/dag_processor_manager/dag_processor_manager.log
           initialDelaySeconds: 120
           periodSeconds: 30
-          timeoutSeconds: 10
-          failureThreshold: 3
       volumes:
       - name: airflow-config
         configMap:
@@ -1429,24 +1427,12 @@ spec:
             memory: "1Gi"
             cpu: "500m"
         livenessProbe:
-          exec:
-            command:
-            - /bin/bash
-            - -c
-            - "ps aux | grep -v grep | grep 'airflow triggerer'"
+          httpGet:
+            path: /health
+            port: 8794
           initialDelaySeconds: 120
           periodSeconds: 30
           timeoutSeconds: 10
-          failureThreshold: 3
-        readinessProbe:
-          exec:
-            command:
-            - /bin/bash
-            - -c
-            - "ps aux | grep -v grep | grep 'airflow triggerer'"
-          initialDelaySeconds: 60
-          periodSeconds: 10
-          timeoutSeconds: 5
           failureThreshold: 3
       volumes:
       - name: airflow-config
