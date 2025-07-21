@@ -47,6 +47,8 @@ kubectl top pods -n data-platform 2>/dev/null || echo "Metrics not available"
 kubectl describe nodes
 ```
 
+
+
 ### **Issue 3: Pod Crash Loop**
 If the pod is restarting:
 
@@ -116,3 +118,52 @@ kubectl get pods -n data-platform -l component=webserver
 **Run the diagnosis commands above and let me know what you see!** 🔍
 
 The **security fix script** is most likely to resolve this issue immediately! 🚀
+
+
+🚨 **I see the issue!** You're still stuck at the same place, which means there are two problems:
+
+1. **Permission denied** - Script needs execute permissions
+2. **Still using old deployment files** - The Airflow job is failing with the same password issue
+
+Let's fix this immediately:
+
+## 🔧 **Quick Fix Commands:**
+
+```bash
+# 1. Fix script permissions
+chmod +x setup-data-platform.sh
+
+# 2. Check if you're running the updated script
+grep -n "POSTGRES_PASSWORD.*password123" setup-data-platform.sh
+# This should return NOTHING if the script is properly updated
+
+# 3. Stop the current failing deployment
+kubectl delete job airflow-db-init-fixed -n data-platform
+kubectl delete deployment airflow-webserver airflow-scheduler airflow-worker airflow-flower -n data-platform
+
+# 4. Check what's in the current Airflow config
+kubectl get configmap airflow-config -n data-platform -o yaml | grep -A5 -B5 "password123"
+```
+
+
+## 🚀 **Correct Deployment Process:**
+
+```bash
+# 1. Make script executable
+chmod +x setup-data-platform.sh
+
+# 2. Clean up everything
+kubectl delete namespace data-platform
+
+# 3. Run the updated script (this creates the project directory)
+./setup-data-platform.sh
+
+# 4. Move to the project directory with UPDATED files
+cd kubernetes-data-platform
+
+# 5. Check that credentials.env exists with secure passwords
+cat credentials.env
+
+# 6. NOW run the deployment
+./scripts/complete-setup.sh
+```
