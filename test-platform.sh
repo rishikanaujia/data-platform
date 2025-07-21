@@ -1,6 +1,7 @@
 #!/bin/bash
 # Comprehensive Kubernetes Data Platform Test Suite
 # Tests all components of your enterprise-grade data platform
+# ENHANCED: Dynamic port detection instead of hardcoded values
 
 set -e
 
@@ -17,6 +18,12 @@ NC='\033[0m'
 TOTAL_TESTS=0
 PASSED_TESTS=0
 FAILED_TESTS=0
+
+# Dynamic port variables (will be auto-detected)
+AIRFLOW_PORT=""
+MINIO_PORT=""
+FLOWER_PORT=""
+GRAFANA_PORT=""
 
 # Print functions
 print_header() {
@@ -49,6 +56,76 @@ print_info() {
     echo -e "${CYAN}ℹ️  $1${NC}"
 }
 
+# Function to detect server IP dynamically
+detect_server_ip() {
+    print_test "Auto-detecting server IP address"
+
+    # Try multiple methods to get the server IP
+    EXTERNAL_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' 2>/dev/null)
+    INTERNAL_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null)
+
+    # Use external IP if available, otherwise internal IP
+    SERVER_IP=${EXTERNAL_IP:-$INTERNAL_IP}
+
+    if [ -n "$SERVER_IP" ]; then
+        print_success "Server IP detected: $SERVER_IP"
+        return 0
+    else
+        print_fail "Could not auto-detect server IP"
+        print_warning "Please set SERVER_IP manually in the script"
+        return 1
+    fi
+}
+
+# Function to detect NodePort assignments dynamically
+detect_service_ports() {
+    print_test "Auto-detecting service NodePort assignments"
+
+    # Get Airflow NodePort
+    AIRFLOW_PORT=$(kubectl get svc airflow-webserver -n $NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+    if [ -n "$AIRFLOW_PORT" ]; then
+        print_success "Airflow NodePort detected: $AIRFLOW_PORT"
+    else
+        print_fail "Could not detect Airflow NodePort"
+        return 1
+    fi
+
+    # Get MinIO Console NodePort
+    MINIO_PORT=$(kubectl get svc minio-console -n $NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+    if [ -n "$MINIO_PORT" ]; then
+        print_success "MinIO NodePort detected: $MINIO_PORT"
+    else
+        print_fail "Could not detect MinIO NodePort"
+        return 1
+    fi
+
+    # Get Flower NodePort
+    FLOWER_PORT=$(kubectl get svc airflow-flower -n $NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+    if [ -n "$FLOWER_PORT" ]; then
+        print_success "Flower NodePort detected: $FLOWER_PORT"
+    else
+        print_fail "Could not detect Flower NodePort"
+        return 1
+    fi
+
+    # Get Grafana NodePort
+    GRAFANA_PORT=$(kubectl get svc grafana -n $NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+    if [ -n "$GRAFANA_PORT" ]; then
+        print_success "Grafana NodePort detected: $GRAFANA_PORT"
+    else
+        print_fail "Could not detect Grafana NodePort"
+        return 1
+    fi
+
+    print_info "Port Detection Summary:"
+    print_info "  Airflow:  $AIRFLOW_PORT"
+    print_info "  MinIO:    $MINIO_PORT"
+    print_info "  Flower:   $FLOWER_PORT"
+    print_info "  Grafana:  $GRAFANA_PORT"
+
+    return 0
+}
+
 # Load credentials
 if [ -f "credentials.env" ]; then
     source credentials.env
@@ -59,13 +136,28 @@ else
 fi
 
 # Platform configuration
-SERVER_IP="192.168.29.191"
 NAMESPACE="data-platform"
 
-print_header "🧪 COMPREHENSIVE PLATFORM TEST SUITE"
+print_header "🧪 COMPREHENSIVE PLATFORM TEST SUITE (DYNAMIC VERSION)"
 print_info "Testing enterprise-grade Kubernetes Data Platform"
-print_info "Server IP: $SERVER_IP"
 print_info "Namespace: $NAMESPACE"
+
+# Auto-detect server IP and service ports
+print_header "Pre-Test: Dynamic Configuration Detection"
+
+if ! detect_server_ip; then
+    print_fail "Cannot continue without server IP"
+    exit 1
+fi
+
+if ! detect_service_ports; then
+    print_fail "Cannot continue without service port information"
+    exit 1
+fi
+
+print_success "Dynamic configuration complete!"
+print_info "Server: $SERVER_IP"
+print_info "Services will be tested on their auto-detected ports"
 
 # Test 1: Pod Health Status
 print_header "Test 1: Pod Health Status"
@@ -98,38 +190,38 @@ else
 fi
 
 # Test 2: Service Connectivity
-print_header "Test 2: Service Connectivity"
+print_header "Test 2: Service Connectivity (Dynamic Ports)"
 
 print_test "Getting service information"
 kubectl get svc -n $NAMESPACE
 echo ""
 
-print_test "Testing Airflow Webserver (port 30770)"
-HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$SERVER_IP:30770/health 2>/dev/null || echo "000")
+print_test "Testing Airflow Webserver (port $AIRFLOW_PORT)"
+HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$SERVER_IP:$AIRFLOW_PORT/health 2>/dev/null || echo "000")
 if [ "$HTTP_STATUS" = "200" ]; then
     print_success "Airflow Webserver responding (HTTP $HTTP_STATUS)"
 else
     print_fail "Airflow Webserver not responding (HTTP $HTTP_STATUS)"
 fi
 
-print_test "Testing MinIO Console (port 30972)"
-HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$SERVER_IP:30972 2>/dev/null || echo "000")
+print_test "Testing MinIO Console (port $MINIO_PORT)"
+HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$SERVER_IP:$MINIO_PORT 2>/dev/null || echo "000")
 if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "403" ]; then
     print_success "MinIO Console responding (HTTP $HTTP_STATUS)"
 else
     print_fail "MinIO Console not responding (HTTP $HTTP_STATUS)"
 fi
 
-print_test "Testing Flower Monitoring (port 30170)"
-HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$SERVER_IP:30170 2>/dev/null || echo "000")
+print_test "Testing Flower Monitoring (port $FLOWER_PORT)"
+HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$SERVER_IP:$FLOWER_PORT 2>/dev/null || echo "000")
 if [ "$HTTP_STATUS" = "200" ]; then
     print_success "Flower Monitoring responding (HTTP $HTTP_STATUS)"
 else
     print_fail "Flower Monitoring not responding (HTTP $HTTP_STATUS)"
 fi
 
-print_test "Testing Grafana (port 30240)"
-HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$SERVER_IP:30240/api/health 2>/dev/null || echo "000")
+print_test "Testing Grafana (port $GRAFANA_PORT)"
+HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$SERVER_IP:$GRAFANA_PORT/api/health 2>/dev/null || echo "000")
 if [ "$HTTP_STATUS" = "200" ]; then
     print_success "Grafana responding (HTTP $HTTP_STATUS)"
 else
@@ -190,10 +282,10 @@ else
 fi
 
 # Test 5: Airflow API Tests
-print_header "Test 5: Airflow API Tests"
+print_header "Test 5: Airflow API Tests (Dynamic Port)"
 
 print_test "Testing Airflow health endpoint"
-HEALTH_RESPONSE=$(curl -s http://$SERVER_IP:30770/health 2>/dev/null || echo "failed")
+HEALTH_RESPONSE=$(curl -s http://$SERVER_IP:$AIRFLOW_PORT/health 2>/dev/null || echo "failed")
 if echo "$HEALTH_RESPONSE" | grep -q "healthy\|ok"; then
     print_success "Airflow health endpoint responding"
     print_info "Health Status: $HEALTH_RESPONSE"
@@ -215,7 +307,7 @@ else
 fi
 
 print_test "Testing Airflow API authentication"
-API_RESPONSE=$(curl -s -u admin:$AIRFLOW_ADMIN_PASSWORD http://$SERVER_IP:30770/api/v1/config 2>/dev/null | head -100)
+API_RESPONSE=$(curl -s -u admin:$AIRFLOW_ADMIN_PASSWORD http://$SERVER_IP:$AIRFLOW_PORT/api/v1/config 2>/dev/null | head -100)
 if echo "$API_RESPONSE" | grep -q "sections\|config"; then
     print_success "Airflow API authentication working"
 else
@@ -223,7 +315,7 @@ else
 fi
 
 # Test 6: Worker and Queue Tests
-print_header "Test 6: Worker and Queue Tests"
+print_header "Test 6: Worker and Queue Tests (Dynamic Port)"
 
 print_test "Checking Airflow worker count"
 WORKER_COUNT=$(kubectl get pods -n $NAMESPACE -l component=worker --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l)
@@ -234,7 +326,7 @@ else
 fi
 
 print_test "Testing Flower worker API"
-FLOWER_RESPONSE=$(curl -s http://$SERVER_IP:30170/api/workers 2>/dev/null)
+FLOWER_RESPONSE=$(curl -s http://$SERVER_IP:$FLOWER_PORT/api/workers 2>/dev/null)
 if echo "$FLOWER_RESPONSE" | grep -q "celery@"; then
     ACTIVE_WORKERS=$(echo "$FLOWER_RESPONSE" | grep -o "celery@" | wc -l)
     print_success "Flower API working - $ACTIVE_WORKERS active workers"
@@ -284,7 +376,7 @@ else
 fi
 
 # Test 8: Monitoring Stack Tests
-print_header "Test 8: Monitoring Stack Tests"
+print_header "Test 8: Monitoring Stack Tests (Dynamic Port)"
 
 print_test "Testing Prometheus"
 PROMETHEUS_POD=$(kubectl get pod -n $NAMESPACE -l app=prometheus -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
@@ -299,7 +391,7 @@ else
 fi
 
 print_test "Testing Grafana API"
-GRAFANA_API_RESPONSE=$(curl -s http://admin:$GRAFANA_ADMIN_PASSWORD@$SERVER_IP:30240/api/health 2>/dev/null)
+GRAFANA_API_RESPONSE=$(curl -s http://admin:$GRAFANA_ADMIN_PASSWORD@$SERVER_IP:$GRAFANA_PORT/api/health 2>/dev/null)
 if echo "$GRAFANA_API_RESPONSE" | grep -q "ok\|database"; then
     print_success "Grafana API responding"
 else
@@ -324,22 +416,22 @@ else
 fi
 
 # Test 10: End-to-End Access Test
-print_header "Test 10: End-to-End Access Test"
+print_header "Test 10: End-to-End Access Test (Dynamic Ports)"
 
 print_test "Verifying all access URLs"
 echo ""
-print_info "🌐 Your Platform Access URLs:"
+print_info "🌐 Your Platform Access URLs (Auto-Detected):"
 echo -e "${CYAN}┌─────────────────────────────────────────────────────────────────────┐${NC}"
-echo -e "${CYAN}│  🚀 AIRFLOW: http://$SERVER_IP:30770                                │${NC}"
+echo -e "${CYAN}│  🚀 AIRFLOW: http://$SERVER_IP:$AIRFLOW_PORT                                │${NC}"
 echo -e "${CYAN}│     Login: admin / $AIRFLOW_ADMIN_PASSWORD                     │${NC}"
 echo -e "${CYAN}│                                                                 │${NC}"
-echo -e "${CYAN}│  💾 MinIO: http://$SERVER_IP:30972                               │${NC}"
+echo -e "${CYAN}│  💾 MinIO: http://$SERVER_IP:$MINIO_PORT                               │${NC}"
 echo -e "${CYAN}│     Login: minioadmin / ${MINIO_ROOT_PASSWORD:0:16}...              │${NC}"
 echo -e "${CYAN}│                                                                 │${NC}"
-echo -e "${CYAN}│  📊 GRAFANA: http://$SERVER_IP:30240                             │${NC}"
+echo -e "${CYAN}│  📊 GRAFANA: http://$SERVER_IP:$GRAFANA_PORT                             │${NC}"
 echo -e "${CYAN}│     Login: admin / $GRAFANA_ADMIN_PASSWORD                     │${NC}"
 echo -e "${CYAN}│                                                                 │${NC}"
-echo -e "${CYAN}│  🌸 FLOWER: http://$SERVER_IP:30170                              │${NC}"
+echo -e "${CYAN}│  🌸 FLOWER: http://$SERVER_IP:$FLOWER_PORT                              │${NC}"
 echo -e "${CYAN}│     No authentication required                                  │${NC}"
 echo -e "${CYAN}└─────────────────────────────────────────────────────────────────────┘${NC}"
 echo ""
@@ -349,7 +441,7 @@ LOGIN_TESTS=0
 LOGIN_SUCCESS=0
 
 # Test Airflow login page
-if curl -s http://$SERVER_IP:30770/login 2>/dev/null | grep -q "Sign In\|login\|password"; then
+if curl -s http://$SERVER_IP:$AIRFLOW_PORT/login 2>/dev/null | grep -q "Sign In\|login\|password"; then
     LOGIN_SUCCESS=$((LOGIN_SUCCESS + 1))
     print_success "Airflow login page loads"
 else
@@ -358,7 +450,7 @@ fi
 LOGIN_TESTS=$((LOGIN_TESTS + 1))
 
 # Test Grafana login page
-if curl -s http://$SERVER_IP:30240/login 2>/dev/null | grep -q "Grafana\|login\|password"; then
+if curl -s http://$SERVER_IP:$GRAFANA_PORT/login 2>/dev/null | grep -q "Grafana\|login\|password"; then
     LOGIN_SUCCESS=$((LOGIN_SUCCESS + 1))
     print_success "Grafana login page loads"
 else
@@ -399,5 +491,29 @@ else
     echo -e "${RED}🔧 Review failed tests and fix before production use${NC}"
     exit 1
 fi
+
+# Save detected configuration for future reference
+print_test "Saving dynamic configuration"
+cat > detected-config.env << EOF
+# Auto-detected Platform Configuration
+# Generated: $(date)
+
+# Server Configuration
+SERVER_IP=$SERVER_IP
+
+# NodePort Assignments
+AIRFLOW_PORT=$AIRFLOW_PORT
+MINIO_PORT=$MINIO_PORT
+FLOWER_PORT=$FLOWER_PORT
+GRAFANA_PORT=$GRAFANA_PORT
+
+# Access URLs
+AIRFLOW_URL=http://$SERVER_IP:$AIRFLOW_PORT
+MINIO_URL=http://$SERVER_IP:$MINIO_PORT
+FLOWER_URL=http://$SERVER_IP:$FLOWER_PORT
+GRAFANA_URL=http://$SERVER_IP:$GRAFANA_PORT
+EOF
+
+print_success "Configuration saved to detected-config.env"
 
 print_header "🌟 Happy Data Engineering with your Enterprise Platform! 🌟"
