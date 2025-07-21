@@ -983,16 +983,16 @@ spec:
             --password "$AIRFLOW_ADMIN_PASSWORD"
         env:
         - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
-          value: "postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow"
+          value: "postgresql+psycopg2://postgres:$POSTGRES_PASSWORD@postgres-primary:5432/airflow"
         - name: AIRFLOW__CORE__FERNET_KEY
           valueFrom:
             secretKeyRef:
               name: airflow-secret
               key: fernet-key
         - name: AIRFLOW__CELERY__BROKER_URL
-          value: "redis://:redispassword123@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CELERY__RESULT_BACKEND
-          value: "redis://:redispassword123@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CORE__EXECUTOR
           value: "CeleryExecutor"
         - name: AIRFLOW__CORE__LOAD_EXAMPLES
@@ -1230,16 +1230,16 @@ spec:
           airflow celery worker
         env:
         - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
-          value: "postgresql+psycopg2://postgres:password123@postgres-primary:5432/airflow"
+          value: "postgresql+psycopg2://postgres:$POSTGRES_PASSWORD@postgres-primary:5432/airflow"
         - name: AIRFLOW__CORE__FERNET_KEY
           valueFrom:
             secretKeyRef:
               name: airflow-secret
               key: fernet-key
         - name: AIRFLOW__CELERY__BROKER_URL
-          value: "redis://:redispassword123@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CELERY__RESULT_BACKEND
-          value: "redis://:redispassword123@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CORE__EXECUTOR
           value: "CeleryExecutor"
         - name: AIRFLOW__CELERY__WORKER_CONCURRENCY
