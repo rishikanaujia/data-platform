@@ -56,6 +56,10 @@ GRAFANA_ADMIN_PASSWORD=""
 FERNET_KEY=""
 WEBSERVER_SECRET_KEY=""
 
+SFTP_USERNAME=""
+SFTP_PASSWORD=""
+FILEBROWSER_ADMIN_PASSWORD=""
+
 
 # Enhanced environment validation
 validate_environment() {
@@ -105,12 +109,18 @@ generate_secure_secrets() {
     AIRFLOW_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
     GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
 
+    # ADD THESE NEW LINES:
+    SFTP_USERNAME="datauser"
+    SFTP_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
+    FILEBROWSER_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
+
+
     # Generate Airflow-specific secrets
     FERNET_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
     WEBSERVER_SECRET_KEY=$(openssl rand -hex 32)
 
     # Validate all secrets were generated
-    local secrets=("POSTGRES_PASSWORD" "REDIS_PASSWORD" "MINIO_ROOT_PASSWORD" "AIRFLOW_ADMIN_PASSWORD" "GRAFANA_ADMIN_PASSWORD" "FERNET_KEY" "WEBSERVER_SECRET_KEY")
+    local secrets=("POSTGRES_PASSWORD" "REDIS_PASSWORD" "MINIO_ROOT_PASSWORD" "AIRFLOW_ADMIN_PASSWORD" "GRAFANA_ADMIN_PASSWORD" "FERNET_KEY" "WEBSERVER_SECRET_KEY" "SFTP_PASSWORD" "FILEBROWSER_ADMIN_PASSWORD")
     for secret in "${secrets[@]}"; do
         if [ -z "${!secret}" ]; then
             print_error "Failed to generate $secret"
@@ -151,6 +161,14 @@ AIRFLOW_FERNET_KEY=$FERNET_KEY
 # Grafana
 GRAFANA_ADMIN_USERNAME=admin
 GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD
+
+# SFTP Server
+SFTP_USERNAME=$SFTP_USERNAME
+SFTP_PASSWORD=$SFTP_PASSWORD
+
+# FileBrowser
+FILEBROWSER_ADMIN_USERNAME=admin
+FILEBROWSER_ADMIN_PASSWORD=$FILEBROWSER_ADMIN_PASSWORD
 EOF
 
     chmod 600 "$credentials_file"
@@ -1426,14 +1444,7 @@ spec:
           limits:
             memory: "1Gi"
             cpu: "500m"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8794
-          initialDelaySeconds: 120
-          periodSeconds: 30
-          timeoutSeconds: 10
-          failureThreshold: 3
+
       volumes:
       - name: airflow-config
         configMap:
@@ -1631,6 +1642,271 @@ spec:
     targetPort: 9001
     name: console
   type: ClusterIP
+EOF
+
+# Create 07-sftp-filebrowser.yaml
+    print_info "Creating SFTP server with FileBrowser UI..."
+    cat > deployment/07-sftp-filebrowser.yaml << EOF
+# SFTP Server and FileBrowser Web UI Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sftp-config
+  namespace: data-platform
+  labels:
+    app: sftp
+    tier: storage
+data:
+  users.conf: |
+    $SFTP_USERNAME:$SFTP_PASSWORD:1001:1001:upload,download,modify,delete
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sftp-secret
+  namespace: data-platform
+  labels:
+    app: sftp
+type: Opaque
+data:
+  username: $(echo -n "$SFTP_USERNAME" | base64 -w 0)
+  password: $(echo -n "$SFTP_PASSWORD" | base64 -w 0)
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sftp-server
+  namespace: data-platform
+  labels:
+    app: sftp
+    tier: storage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sftp
+  template:
+    metadata:
+      labels:
+        app: sftp
+        tier: storage
+    spec:
+      containers:
+      - name: sftp
+        image: atmoz/sftp:latest
+        env:
+        - name: SFTP_USERS
+          value: "$SFTP_USERNAME:$SFTP_PASSWORD:1001:1001:data"
+        ports:
+        - containerPort: 22
+          name: sftp
+        volumeMounts:
+        - name: sftp-data
+          mountPath: /home/$SFTP_USERNAME/data
+        - name: sftp-keys
+          mountPath: /etc/ssh/keys
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          tcpSocket:
+            port: 22
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          tcpSocket:
+            port: 22
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: sftp-data
+        persistentVolumeClaim:
+          claimName: sftp-data-pvc
+      - name: sftp-keys
+        emptyDir: {}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filebrowser
+  namespace: data-platform
+  labels:
+    app: filebrowser
+    tier: storage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: filebrowser
+  template:
+    metadata:
+      labels:
+        app: filebrowser
+        tier: storage
+    spec:
+      containers:
+      - name: filebrowser
+        image: filebrowser/filebrowser:latest
+        env:
+        - name: FB_DATABASE
+          value: "/database/filebrowser.db"
+        - name: FB_CONFIG
+          value: "/config/settings.json"
+        ports:
+        - containerPort: 8080    # Changed from 80 to 8080
+          name: web
+        volumeMounts:
+        - name: sftp-data
+          mountPath: /srv
+        - name: filebrowser-db
+          mountPath: /database
+        - name: filebrowser-config
+          mountPath: /config
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "250m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080           # Changed from 80 to 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080           # Changed from 80 to 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      initContainers:
+      - name: filebrowser-init
+        image: filebrowser/filebrowser:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Create initial config
+          mkdir -p /config /database
+          if [ ! -f /database/filebrowser.db ]; then
+            filebrowser config init --database /database/filebrowser.db
+            filebrowser users add admin $FILEBROWSER_ADMIN_PASSWORD --perm.admin --database /database/filebrowser.db
+          fi
+
+          # Create settings.json with port 8080
+          cat > /config/settings.json << EOL
+          {
+            "port": 8080,
+            "baseURL": "",
+            "address": "",
+            "log": "stdout",
+            "database": "/database/filebrowser.db",
+            "root": "/srv"
+          }
+          EOL
+        env:
+        - name: FILEBROWSER_ADMIN_PASSWORD
+          value: "$FILEBROWSER_ADMIN_PASSWORD"
+        volumeMounts:
+        - name: filebrowser-db
+          mountPath: /database
+        - name: filebrowser-config
+          mountPath: /config
+      volumes:
+      - name: sftp-data
+        persistentVolumeClaim:
+          claimName: sftp-data-pvc
+      - name: filebrowser-db
+        persistentVolumeClaim:
+          claimName: filebrowser-db-pvc
+      - name: filebrowser-config
+        persistentVolumeClaim:
+          claimName: filebrowser-config-pvc
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sftp-data-pvc
+  namespace: data-platform
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: $STORAGE_CLASS
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: filebrowser-db-pvc
+  namespace: data-platform
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: $STORAGE_CLASS
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: filebrowser-config-pvc
+  namespace: data-platform
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: $STORAGE_CLASS
+  resources:
+    requests:
+      storage: 100Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sftp-server
+  namespace: data-platform
+  labels:
+    app: sftp
+spec:
+  selector:
+    app: sftp
+  ports:
+  - port: 22
+    targetPort: 22
+    name: sftp
+    protocol: TCP
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: filebrowser
+  namespace: data-platform
+  labels:
+    app: filebrowser
+spec:
+  selector:
+    app: filebrowser
+  ports:
+  - port: 80              # External port stays 80
+    targetPort: 8080      # Internal port changed to 8080
+    name: web
 EOF
 
     print_success "All production deployment files created!"
@@ -1886,6 +2162,11 @@ print_header "Step 5: Deploying MinIO Object Storage"
 kubectl apply -f deployment/06-minio.yaml
 wait_for_deployment "minio" "data-platform" 300
 
+print_header "Step 6: Deploying SFTP Server and FileBrowser"
+kubectl apply -f deployment/07-sftp-filebrowser.yaml
+wait_for_deployment "sftp-server" "data-platform" 300
+wait_for_deployment "filebrowser" "data-platform" 300
+
 print_header "🎉 Production Deployment Completed!"
 echo ""
 print_success "All services deployed successfully!"
@@ -2071,6 +2352,21 @@ else
     print_error "Grafana issues detected"
 fi
 
+SFTP_STATUS=$(kubectl get pods -n data-platform -l app=sftp --no-headers 2>/dev/null | grep "Running" | wc -l)
+if [ "$SFTP_STATUS" -eq 1 ]; then
+    print_success "SFTP Server is healthy"
+else
+    print_error "SFTP Server issues detected"
+fi
+
+# FileBrowser
+FILEBROWSER_STATUS=$(kubectl get pods -n data-platform -l app=filebrowser --no-headers 2>/dev/null | grep "Running" | wc -l)
+if [ "$FILEBROWSER_STATUS" -eq 1 ]; then
+    print_success "FileBrowser is healthy"
+else
+    print_error "FileBrowser issues detected"
+fi
+
 # Overall status
 echo ""
 print_header "Overall Platform Status"
@@ -2142,6 +2438,8 @@ start_port_forward "airflow-webserver" 8080 8080
 start_port_forward "airflow-flower" 5555 5555
 start_port_forward "minio-console" 9001 9001
 start_port_forward "prometheus" 9090 9090
+start_port_forward "sftp-server" 2222 22
+start_port_forward "filebrowser" 8090 8080
 
 echo ""
 print_success "All port-forwards started successfully!"
@@ -2149,19 +2447,25 @@ echo ""
 print_header "🌐 Access Your Services"
 echo ""
 echo "  🔍 Grafana (Dashboards):         http://localhost:3000"
-echo "      Username: admin | Password: admin123"
+echo "      Username: admin | Password: [Check credentials.env]"
 echo ""
 echo "  ⚙️  Airflow (Orchestration):      http://localhost:8080"
-echo "      Username: admin | Password: admin123"
+echo "      Username: admin | Password: [Check credentials.env]"
 echo ""
 echo "  🌸 Flower (Worker Monitoring):   http://localhost:5555"
 echo "      Real-time Celery worker monitoring"
 echo ""
 echo "  💾 MinIO (Object Storage):       http://localhost:9001"
-echo "      Username: minioadmin | Password: minioadmin123"
+echo "      Username: minioadmin | Password: minio[Check credentials.env]"
 echo ""
 echo "  📈 Prometheus (Metrics):         http://localhost:9090"
 echo "      Raw metrics and monitoring data"
+echo ""
+echo "  📁 SFTP Server:                  sftp://datauser@localhost:2222"
+echo "      Password: [Check credentials.env file]"
+echo ""
+echo "  🌐 FileBrowser:                  http://localhost:8090"
+echo "      Username: admin | Password: [Check credentials.env]"
 echo ""
 print_info "Press Ctrl+C to stop all port-forwards"
 
@@ -2335,6 +2639,9 @@ kubectl patch svc airflow-webserver -n data-platform -p '{"spec":{"type":"NodePo
 kubectl patch svc minio-console -n data-platform -p '{"spec":{"type":"NodePort"}}'
 kubectl patch svc airflow-flower -n data-platform -p '{"spec":{"type":"NodePort"}}'
 kubectl patch svc grafana -n data-platform -p '{"spec":{"type":"NodePort"}}'
+kubectl patch svc sftp-server -n data-platform -p '{"spec":{"type":"NodePort"}}'
+kubectl patch svc filebrowser -n data-platform -p '{"spec":{"type":"NodePort"}}'
+
 
 print_success "All services converted to NodePort"
 
@@ -2368,6 +2675,9 @@ AIRFLOW_PORT=$(kubectl get svc airflow-webserver -n data-platform -o jsonpath='{
 MINIO_PORT=$(kubectl get svc minio-console -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
 FLOWER_PORT=$(kubectl get svc airflow-flower -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
 GRAFANA_PORT=$(kubectl get svc grafana -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+SFTP_PORT=$(kubectl get svc sftp-server -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+FILEBROWSER_PORT=$(kubectl get svc filebrowser -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+
 
 # Display access information
 echo ""
@@ -2379,12 +2689,12 @@ echo "├───────────────────────�
 echo "│                                                                     │"
 echo "│  🚀 AIRFLOW ORCHESTRATION                                          │"
 echo "│     URL: http://$SERVER_IP:$AIRFLOW_PORT                                      │"
-echo "│     Username: admin | Password: admin123                           │"
+echo "│     Username: admin | Password: [Check credentials.env]                           │"
 echo "│     Purpose: Data pipeline orchestration & DAG management          │"
 echo "│                                                                     │"
 echo "│  💾 MinIO OBJECT STORAGE                                           │"
 echo "│     URL: http://$SERVER_IP:$MINIO_PORT                                       │"
-echo "│     Username: minioadmin | Password: minioadmin123                 │"
+echo "│     Username: minioadmin | Password: minio[Check credentials.env]                 │"
 echo "│     Purpose: S3-compatible data lake and object storage            │"
 echo "│                                                                     │"
 echo "│  🌸 FLOWER WORKER MONITORING                                       │"
@@ -2393,9 +2703,18 @@ echo "│     Purpose: Real-time Celery worker monitoring & task tracking    │
 echo "│                                                                     │"
 echo "│  📊 GRAFANA DASHBOARDS                                             │"
 echo "│     URL: http://$SERVER_IP:$GRAFANA_PORT                                     │"
-echo "│     Username: admin | Password: admin123                           │"
+echo "│     Username: admin | Password: [Check credentials.env]                           │"
 echo "│     Purpose: System metrics, monitoring & alerting dashboards      │"
 echo "│                                                                     │"
+echo "│  📁 SFTP FILE SERVER                                           │"
+echo "│     SFTP: sftp://datauser@$SERVER_IP:$SFTP_PORT                           │"
+echo "│     Password: [Check credentials.env file]                     │"
+echo "│     Purpose: Secure file transfer and data exchange            │"
+echo "│                                                                     │"
+echo "│  🌐 FILEBROWSER WEB UI                                         │"
+echo "│     URL: http://$SERVER_IP:$FILEBROWSER_PORT                              │"
+echo "│     Username: admin | Password: [Check credentials.env]        │"
+echo "│     Purpose: Web-based file management and sharing             │"
 echo "└─────────────────────────────────────────────────────────────────────┘"
 echo ""
 
@@ -2410,18 +2729,18 @@ cat > access-info.txt << EOL
 
 ### Primary Services
 - Airflow Orchestration:    http://$SERVER_IP:$AIRFLOW_PORT
-  Username: admin | Password: admin123
+  Username: admin | Password: [Check credentials.env]
   Features: DAG management, task scheduling, workflow monitoring
 
 - MinIO Object Storage:     http://$SERVER_IP:$MINIO_PORT
-  Username: minioadmin | Password: minioadmin123
+  Username: minioadmin | Password: minio[Check credentials.env]
   Features: S3-compatible API, bucket management, data lake storage
 
 - Flower Worker Monitoring: http://$SERVER_IP:$FLOWER_PORT
   Features: Real-time worker status, task distribution, performance metrics
 
 - Grafana Dashboards:       http://$SERVER_IP:$GRAFANA_PORT
-  Username: admin | Password: admin123
+  Username: admin | Password: [Check credentials.env]
   Features: System monitoring, custom dashboards, alerting
 
 ## 📊 PLATFORM ARCHITECTURE:
@@ -2692,10 +3011,13 @@ After deployment, your services will be externally accessible:
 
 | Service | External Access | Credentials | Purpose |
 |---------|----------------|-------------|---------|
-| **🚀 Airflow** | http://YOUR_IP:PORT | admin / admin123 | Workflow orchestration & DAG management |
-| **💾 MinIO** | http://YOUR_IP:PORT | minioadmin / minioadmin123 | S3-compatible object storage |
+| **🚀 Airflow** | http://YOUR_IP:PORT | admin / [Check credentials.env] | Workflow orchestration & DAG management |
+| **💾 MinIO** | http://YOUR_IP:PORT | minioadmin / minio[Check credentials.env] | S3-compatible object storage |
 | **🌸 Flower** | http://YOUR_IP:PORT | - | Real-time Celery worker monitoring |
-| **📊 Grafana** | http://YOUR_IP:PORT | admin / admin123 | System monitoring & dashboards |
+| **📊 Grafana** | http://YOUR_IP:PORT | admin / [Check credentials.env] | System monitoring & dashboards |
+| **📁 SFTP** | sftp://USER@YOUR_IP:PORT | datauser / [credentials.env] | Secure file transfer & data exchange |
+| **🌐 FileBrowser** | http://YOUR_IP:PORT | admin / [credentials.env] | Web-based file management UI |
+
 
 *Exact URLs will be provided after running the setup scripts and saved in `access-info.txt`*
 
