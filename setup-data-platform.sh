@@ -3,19 +3,7 @@
 # Version: 3.0 - Enterprise Grade with All Fixes Applied
 # Features: Apache Airflow 2.8.1, CeleryExecutor, External Access, Auto-Security
 
-set -euo pipefail
-
-cleanup() {
-    local exit_code=$?
-    if [ $exit_code -ne 0 ]; then
-        print_error "Setup failed with exit code $exit_code"
-        print_info "Cleaning up partial deployment..."
-        kubectl delete namespace data-platform --ignore-not-found=true --timeout=60s
-        # Clean up any stuck resources
-        kubectl patch namespace data-platform -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
-    fi
-}
-trap cleanup EXIT
+set -e
 
 # Color codes for beautiful output
 RED='\033[0;31m'
@@ -93,22 +81,12 @@ validate_environment() {
         exit 1
     fi
 
-    # Check kubectl connectivity with timeout
-    if ! timeout 10s kubectl cluster-info >/dev/null 2>&1; then
-        print_error "Cannot connect to Kubernetes cluster within 10 seconds"
+    # Check kubectl connectivity
+    if ! kubectl cluster-info &>/dev/null; then
+        print_error "Cannot connect to Kubernetes cluster"
         print_info "Please check your kubeconfig and cluster status"
-        kubectl config current-context 2>/dev/null || print_info "No current context set"
         exit 1
     fi
-
-    # Check cluster nodes
-    local ready_nodes=$(kubectl get nodes --no-headers 2>/dev/null | grep " Ready " | wc -l)
-    if [ "$ready_nodes" -eq 0 ]; then
-        print_error "No ready nodes found in cluster"
-        kubectl get nodes
-        exit 1
-    fi
-    print_success "Found $ready_nodes ready node(s)"
 
     # Validate Python cryptography
     if ! python3 -c "from cryptography.fernet import Fernet" 2>/dev/null; then
@@ -117,37 +95,7 @@ validate_environment() {
         exit 1
     fi
 
-    # Validate cluster resources
-    validate_cluster_resources
-
     print_success "Environment validation passed"
-}
-
-# ADD NEW FUNCTION: Validate cluster resources
-validate_cluster_resources() {
-    local required_cpu_m=4000  # 4 cores minimum
-    local required_memory_gi=8  # 8GB minimum
-
-    print_info "Checking cluster resources..."
-
-    # Get available resources
-    local available_cpu available_memory
-    if command -v kubectl top >/dev/null && kubectl top nodes --no-headers >/dev/null 2>&1; then
-        available_cpu=$(kubectl top nodes --no-headers 2>/dev/null | awk '{gsub(/m/, "", $3); sum+=$3} END {print sum+0}')
-        available_memory=$(kubectl top nodes --no-headers 2>/dev/null | awk '{gsub(/Gi/, "", $5); gsub(/Mi/, "", $5); if($5 ~ /Mi/) sum+=$5/1000; else sum+=$5} END {print int(sum)}')
-
-        if [ "${available_cpu:-0}" -lt "$required_cpu_m" ]; then
-            print_warning "Low CPU resources: ${available_cpu:-unknown}m available, ${required_cpu_m}m recommended"
-        fi
-
-        if [ "${available_memory:-0}" -lt "$required_memory_gi" ]; then
-            print_warning "Low memory: ${available_memory:-unknown}Gi available, ${required_memory_gi}Gi recommended"
-        fi
-
-        print_info "Resources - CPU: ${available_cpu:-unknown}m, Memory: ${available_memory:-unknown}Gi"
-    else
-        print_warning "Metrics server not available - cannot check resource usage"
-    fi
 }
 
 # Generate cryptographically secure secrets
@@ -255,100 +203,23 @@ detect_k8s_env() {
         print_info "Using generic Kubernetes configuration"
     fi
 
-    # Enhanced storage class validation
-    validate_storage_class "$STORAGE_CLASS"
-}
+    # SECURITY FIX: Validate storage class exists
+    if ! kubectl get storageclass "$STORAGE_CLASS" &>/dev/null; then
+        print_warning "Storage class '$STORAGE_CLASS' not found"
+        print_info "Available storage classes:"
+        kubectl get storageclass
 
-# ADD NEW FUNCTION: Enhanced storage validation
-validate_storage_class() {
-    local sc=$1
-
-    if ! kubectl get storageclass "$sc" &>/dev/null; then
-        print_warning "Storage class '$sc' not found"
-
-        # Get available storage classes
-        local available_sc_list=($(kubectl get storageclass --no-headers -o custom-columns=':metadata.name' 2>/dev/null))
-
-        if [ ${#available_sc_list[@]} -eq 0 ]; then
-            print_error "No storage classes available in cluster"
+        local available_sc=$(kubectl get storageclass -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [ -n "$available_sc" ]; then
+            STORAGE_CLASS="$available_sc"
+            print_info "Using alternative storage class: $STORAGE_CLASS"
+        else
+            print_error "No storage classes available"
             exit 1
         fi
-
-        print_info "Available storage classes: ${available_sc_list[*]}"
-
-        # Use first available storage class
-        STORAGE_CLASS="${available_sc_list[0]}"
-        print_info "Using alternative storage class: $STORAGE_CLASS"
-    fi
-
-    # Check storage class capabilities
-    local allow_expansion=$(kubectl get storageclass "$STORAGE_CLASS" -o jsonpath='{.allowVolumeExpansion}' 2>/dev/null)
-    local provisioner=$(kubectl get storageclass "$STORAGE_CLASS" -o jsonpath='{.provisioner}' 2>/dev/null)
-
-    print_info "Storage class '$STORAGE_CLASS' validated"
-    print_info "Provisioner: ${provisioner:-unknown}"
-
-    if [ "$allow_expansion" != "true" ]; then
-        print_warning "Storage class does not support volume expansion"
     fi
 
     print_success "Storage class validated: $STORAGE_CLASS"
-}
-
-# ADD NEW FUNCTION: Create all secrets before deployments
-create_kubernetes_secrets() {
-    print_info "🔐 Creating Kubernetes secrets..."
-
-    # Create namespace first if it doesn't exist
-    kubectl create namespace data-platform --dry-run=client -o yaml | kubectl apply -f -
-
-    # Create PostgreSQL secret
-    kubectl create secret generic postgres-secret \
-        --from-literal=password="$POSTGRES_PASSWORD" \
-        --namespace=data-platform \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-    # Create Redis secret
-    kubectl create secret generic redis-secret \
-        --from-literal=password="$REDIS_PASSWORD" \
-        --namespace=data-platform \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-    # Create MinIO secret
-    kubectl create secret generic minio-secret \
-        --from-literal=root-user="minioadmin" \
-        --from-literal=root-password="$MINIO_ROOT_PASSWORD" \
-        --namespace=data-platform \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-    # Create Airflow secret
-    kubectl create secret generic airflow-secret \
-        --from-literal=fernet-key="$FERNET_KEY" \
-        --from-literal=webserver-secret-key="$WEBSERVER_SECRET_KEY" \
-        --from-literal=admin-password="$AIRFLOW_ADMIN_PASSWORD" \
-        --namespace=data-platform \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-    # Create SFTP secret
-    kubectl create secret generic sftp-secret \
-        --from-literal=username="$SFTP_USERNAME" \
-        --from-literal=password="$SFTP_PASSWORD" \
-        --namespace=data-platform \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-    # Create Grafana secret
-    kubectl create secret generic grafana-secret \
-        --from-literal=admin-password="$GRAFANA_ADMIN_PASSWORD" \
-        --namespace=data-platform \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-    # Create FileBrowser secret
-    kubectl create secret generic filebrowser-secret \
-        --from-literal=admin-password="$FILEBROWSER_ADMIN_PASSWORD" \
-        --namespace=data-platform \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-    print_success "All Kubernetes secrets created"
 }
 
 # Create project structure
@@ -390,6 +261,15 @@ metadata:
     name: data-platform
     environment: production
 
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: data-platform
+type: Opaque
+data:
+  password: $(echo -n "$POSTGRES_PASSWORD" | base64 -w 0)
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -558,11 +438,8 @@ spec:
         command: ["redis-server"]
         env:
         - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: redis-secret
-              key: password
-        args: ["--requirepass", "$(REDIS_PASSWORD)"]
+          value: "$REDIS_PASSWORD"
+        args: ["--requirepass", "$REDIS_PASSWORD"]
         ports:
         - containerPort: 6379
           name: redis
@@ -579,17 +456,19 @@ spec:
         livenessProbe:
           exec:
             command:
-            - /bin/sh
-            - -c
-            - redis-cli -a "$REDIS_PASSWORD" ping
+            - redis-cli
+            - -a
+            - "$REDIS_PASSWORD"
+            - ping
           initialDelaySeconds: 30
           periodSeconds: 10
         readinessProbe:
           exec:
             command:
-            - /bin/sh
-            - -c
-            - redis-cli -a "$REDIS_PASSWORD" ping
+            - redis-cli
+            - -a
+            - "$REDIS_PASSWORD"
+            - ping
           initialDelaySeconds: 5
           periodSeconds: 5
       volumes:
@@ -807,10 +686,7 @@ spec:
         image: grafana/grafana:latest
         env:
         - name: GF_SECURITY_ADMIN_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: grafana-secret
-              key: admin-password
+          value: "$GRAFANA_ADMIN_PASSWORD"
         - name: GF_USERS_ALLOW_SIGN_UP
           value: "false"
         - name: GF_INSTALL_PLUGINS
@@ -923,15 +799,15 @@ data:
     compress_serialized_dags = False
 
     [database]
-    sql_alchemy_conn = postgresql+psycopg2://postgres:${POSTGRES_PASSWORD}@postgres-primary:5432/airflow
+    sql_alchemy_conn = postgresql+psycopg2://postgres:$POSTGRES_PASSWORD@postgres-primary:5432/airflow
     sql_alchemy_max_overflow = 20
     sql_alchemy_pool_recycle = 1800
     sql_alchemy_pool_pre_ping = True
     sql_alchemy_schema =
 
     [celery]
-    broker_url = redis://:${REDIS_PASSWORD}@redis:6379/1
-    result_backend = redis://:${REDIS_PASSWORD}@redis:6379/1
+    broker_url = redis://:$REDIS_PASSWORD@redis:6379/1
+    result_backend = redis://:$REDIS_PASSWORD@redis:6379/1
     flower_host = 0.0.0.0
     flower_url_prefix =
     flower_port = 5555
@@ -1072,6 +948,19 @@ data:
     heartbeat_sec = 5
 
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: airflow-secret
+  namespace: data-platform
+  labels:
+    app: airflow
+type: Opaque
+data:
+  fernet-key: $(echo -n "$FERNET_KEY" | base64 -w 0)
+  webserver-secret-key: $(echo -n "$WEBSERVER_SECRET_KEY" | base64 -w 0)
+
+---
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -1120,26 +1009,16 @@ spec:
             --password "$AIRFLOW_ADMIN_PASSWORD"
         env:
         - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
-          value: "postgresql+psycopg2://postgres:$(POSTGRES_PASSWORD)@postgres-primary:5432/airflow"
-        - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: postgres-secret
-              key: password
+          value: "postgresql+psycopg2://postgres:$POSTGRES_PASSWORD@postgres-primary:5432/airflow"
         - name: AIRFLOW__CORE__FERNET_KEY
           valueFrom:
             secretKeyRef:
               name: airflow-secret
               key: fernet-key
         - name: AIRFLOW__CELERY__BROKER_URL
-          value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CELERY__RESULT_BACKEND
-          value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
-        - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: redis-secret
-              key: password
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CORE__EXECUTOR
           value: "CeleryExecutor"
         - name: AIRFLOW__CORE__LOAD_EXAMPLES
@@ -1149,13 +1028,6 @@ spec:
             secretKeyRef:
               name: airflow-secret
               key: webserver-secret-key
-
-        # For the airflow-db-init job, also add:
-        - name: AIRFLOW_ADMIN_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: airflow-secret
-              key: admin-password
         volumeMounts:
         - name: airflow-config
           mountPath: /opt/airflow/airflow.cfg
@@ -1207,26 +1079,16 @@ spec:
           airflow webserver --port 8080
         env:
         - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
-          value: "postgresql+psycopg2://postgres:$(POSTGRES_PASSWORD)@postgres-primary:5432/airflow"
-        - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: postgres-secret
-              key: password
+          value: "postgresql+psycopg2://postgres:$POSTGRES_PASSWORD@postgres-primary:5432/airflow"
         - name: AIRFLOW__CORE__FERNET_KEY
           valueFrom:
             secretKeyRef:
               name: airflow-secret
               key: fernet-key
         - name: AIRFLOW__CELERY__BROKER_URL
-          value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CELERY__RESULT_BACKEND
-          value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
-        - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: redis-secret
-              key: password
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CORE__EXECUTOR
           value: "CeleryExecutor"
         - name: AIRFLOW__CORE__LOAD_EXAMPLES
@@ -1310,26 +1172,16 @@ spec:
           airflow scheduler
         env:
         - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
-          value: "postgresql+psycopg2://postgres:$(POSTGRES_PASSWORD)@postgres-primary:5432/airflow"
-        - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: postgres-secret
-              key: password
+          value: "postgresql+psycopg2://postgres:$POSTGRES_PASSWORD@postgres-primary:5432/airflow"
         - name: AIRFLOW__CORE__FERNET_KEY
           valueFrom:
             secretKeyRef:
               name: airflow-secret
               key: fernet-key
         - name: AIRFLOW__CELERY__BROKER_URL
-          value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CELERY__RESULT_BACKEND
-          value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
-        - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: redis-secret
-              key: password
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CORE__EXECUTOR
           value: "CeleryExecutor"
         - name: AIRFLOW__CORE__LOAD_EXAMPLES
@@ -1402,30 +1254,20 @@ spec:
           airflow celery worker
         env:
         - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
-          value: "postgresql+psycopg2://postgres:$(POSTGRES_PASSWORD)@postgres-primary:5432/airflow"
-        - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: postgres-secret
-              key: password
+          value: "postgresql+psycopg2://postgres:$POSTGRES_PASSWORD@postgres-primary:5432/airflow"
         - name: AIRFLOW__CORE__FERNET_KEY
           valueFrom:
             secretKeyRef:
               name: airflow-secret
               key: fernet-key
         - name: AIRFLOW__CELERY__BROKER_URL
-          value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CELERY__RESULT_BACKEND
-          value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
-        - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: redis-secret
-              key: password
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CORE__EXECUTOR
           value: "CeleryExecutor"
-        - name: AIRFLOW__CORE__LOAD_EXAMPLES
-          value: "False"
+        - name: AIRFLOW__CELERY__WORKER_CONCURRENCY
+          value: "16"
         - name: AIRFLOW__WEBSERVER__SECRET_KEY
           valueFrom:
             secretKeyRef:
@@ -1486,30 +1328,20 @@ spec:
           airflow celery flower
         env:
         - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
-          value: "postgresql+psycopg2://postgres:$(POSTGRES_PASSWORD)@postgres-primary:5432/airflow"
-        - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: postgres-secret
-              key: password
+          value: "postgresql+psycopg2://postgres:$POSTGRES_PASSWORD@postgres-primary:5432/airflow"
         - name: AIRFLOW__CORE__FERNET_KEY
           valueFrom:
             secretKeyRef:
               name: airflow-secret
               key: fernet-key
         - name: AIRFLOW__CELERY__BROKER_URL
-          value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CELERY__RESULT_BACKEND
-          value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
-        - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: redis-secret
-              key: password
-        - name: AIRFLOW__CORE__EXECUTOR
-          value: "CeleryExecutor"
-        - name: AIRFLOW__CORE__LOAD_EXAMPLES
-          value: "False"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
+        - name: AIRFLOW__CELERY__FLOWER_HOST
+          value: "0.0.0.0"
+        - name: AIRFLOW__CELERY__FLOWER_PORT
+          value: "5555"
         - name: AIRFLOW__WEBSERVER__SECRET_KEY
           valueFrom:
             secretKeyRef:
@@ -1580,26 +1412,16 @@ spec:
           airflow triggerer
         env:
         - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
-          value: "postgresql+psycopg2://postgres:$(POSTGRES_PASSWORD)@postgres-primary:5432/airflow"
-        - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: postgres-secret
-              key: password
+          value: "postgresql+psycopg2://postgres:$POSTGRES_PASSWORD@postgres-primary:5432/airflow"
         - name: AIRFLOW__CORE__FERNET_KEY
           valueFrom:
             secretKeyRef:
               name: airflow-secret
               key: fernet-key
         - name: AIRFLOW__CELERY__BROKER_URL
-          value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CELERY__RESULT_BACKEND
-          value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
-        - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: redis-secret
-              key: password
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
         - name: AIRFLOW__CORE__EXECUTOR
           value: "CeleryExecutor"
         - name: AIRFLOW__CORE__LOAD_EXAMPLES
@@ -1736,15 +1558,9 @@ spec:
         - minio server /data --console-address ":9001"
         env:
         - name: MINIO_ROOT_USER
-          valueFrom:
-            secretKeyRef:
-              name: minio-secret
-              key: root-user
+          value: "minioadmin"
         - name: MINIO_ROOT_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: minio-secret
-              key: root-password
+          value: "$MINIO_ROOT_PASSWORD"
         ports:
         - containerPort: 9000
           name: api
@@ -1845,6 +1661,19 @@ data:
     $SFTP_USERNAME:$SFTP_PASSWORD:1001:1001:upload,download,modify,delete
 
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sftp-secret
+  namespace: data-platform
+  labels:
+    app: sftp
+type: Opaque
+data:
+  username: $(echo -n "$SFTP_USERNAME" | base64 -w 0)
+  password: $(echo -n "$SFTP_PASSWORD" | base64 -w 0)
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -1869,17 +1698,7 @@ spec:
         image: atmoz/sftp:latest
         env:
         - name: SFTP_USERS
-          value: "$(SFTP_USERNAME):$(SFTP_PASSWORD):1001:1001:data"
-        - name: SFTP_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: sftp-secret
-              key: username
-        - name: SFTP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: sftp-secret
-              key: password
+          value: "$SFTP_USERNAME:$SFTP_PASSWORD:1001:1001:data"
         ports:
         - containerPort: 22
           name: sftp
@@ -1996,10 +1815,7 @@ spec:
           EOL
         env:
         - name: FILEBROWSER_ADMIN_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: filebrowser-secret
-              key: admin-password
+          value: "$FILEBROWSER_ADMIN_PASSWORD"
         volumeMounts:
         - name: filebrowser-db
           mountPath: /database
@@ -2227,9 +2043,9 @@ EOF
     print_info "Creating deployment script..."
     cat > scripts/deploy.sh << 'EOF'
 #!/bin/bash
-# Production Deployment Script with Enhanced Dependencies
+# Production Deployment Script
 
-set -euo pipefail
+set -e
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -2256,155 +2072,60 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-# Enhanced wait functions with retry
-wait_for_deployment_with_retry() {
+wait_for_deployment() {
     local deployment=$1
     local namespace=$2
-    local max_attempts=${3:-3}
-    local timeout=${4:-300}
+    local timeout=${3:-300}
 
-    for attempt in $(seq 1 $max_attempts); do
-        print_status "Waiting for $deployment (attempt $attempt/$max_attempts)..."
-
-        if kubectl wait --for=condition=available deployment/$deployment \
-           -n $namespace --timeout=${timeout}s 2>/dev/null; then
-            print_success "$deployment is ready!"
-            return 0
-        fi
-
-        if [ $attempt -lt $max_attempts ]; then
-            print_warning "Attempt $attempt failed, checking status..."
-            kubectl get pods -l app=$deployment -n $namespace --no-headers | head -5
-
-            print_status "Retrying in 30 seconds..."
-            sleep 30
-
-            # Try to restart the deployment
-            kubectl rollout restart deployment/$deployment -n $namespace 2>/dev/null || true
-        fi
-    done
-
-    print_error "$deployment failed to become ready after $max_attempts attempts"
-    return 1
+    print_status "Waiting for $deployment to be ready..."
+    if kubectl wait --for=condition=available deployment/$deployment -n $namespace --timeout=${timeout}s 2>/dev/null; then
+        print_success "$deployment is ready!"
+        return 0
+    else
+        print_error "$deployment failed to become ready within ${timeout}s"
+        return 1
+    fi
 }
 
-wait_for_statefulset_with_retry() {
+wait_for_statefulset() {
     local statefulset=$1
     local namespace=$2
-    local max_attempts=${3:-3}
-    local timeout=${4:-300}
+    local timeout=${3:-300}
 
-    for attempt in $(seq 1 $max_attempts); do
-        print_status "Waiting for $statefulset StatefulSet (attempt $attempt/$max_attempts)..."
-
-        if kubectl wait --for=condition=ready pod -l app=$statefulset \
-           -n $namespace --timeout=${timeout}s 2>/dev/null; then
-            print_success "$statefulset StatefulSet is ready!"
-            return 0
-        fi
-
-        if [ $attempt -lt $max_attempts ]; then
-            print_warning "Attempt $attempt failed, checking status..."
-            kubectl get pods -l app=$statefulset -n $namespace --no-headers
-
-            print_status "Retrying in 30 seconds..."
-            sleep 30
-        fi
-    done
-
-    print_error "$statefulset StatefulSet failed to become ready after $max_attempts attempts"
-    return 1
+    print_status "Waiting for $statefulset to be ready..."
+    if kubectl wait --for=condition=ready pod -l app=$statefulset -n $namespace --timeout=${timeout}s 2>/dev/null; then
+        print_success "$statefulset is ready!"
+        return 0
+    else
+        print_error "$statefulset failed to become ready within ${timeout}s"
+        return 1
+    fi
 }
 
-wait_for_job_with_retry() {
+wait_for_job() {
     local job=$1
     local namespace=$2
-    local max_attempts=${3:-3}
-    local timeout=${4:-300}
+    local timeout=${3:-300}
 
-    for attempt in $(seq 1 $max_attempts); do
-        print_status "Waiting for job $job (attempt $attempt/$max_attempts)..."
-
-        if kubectl wait --for=condition=complete job/$job \
-           -n $namespace --timeout=${timeout}s 2>/dev/null; then
-            print_success "Job $job completed!"
-            return 0
-        fi
-
-        if [ $attempt -lt $max_attempts ]; then
-            print_warning "Job attempt $attempt failed, checking logs..."
-            kubectl logs job/$job -n $namespace --tail=10 | head -5
-
-            print_status "Retrying in 15 seconds..."
-            sleep 15
-
-            # Delete and recreate the job for retry
-            kubectl delete job $job -n $namespace --ignore-not-found=true
-            sleep 5
-            # The job will be recreated when we re-apply the YAML
-        fi
-    done
-
-    print_error "Job $job failed to complete after $max_attempts attempts"
-    return 1
+    print_status "Waiting for job $job to complete..."
+    if kubectl wait --for=condition=complete job/$job -n $namespace --timeout=${timeout}s 2>/dev/null; then
+        print_success "Job $job completed!"
+        return 0
+    else
+        print_error "Job $job did not complete within ${timeout}s"
+        return 1
+    fi
 }
 
-# Database connectivity check
-wait_for_database_ready() {
-    print_status "Waiting for PostgreSQL to accept connections..."
+print_header "Production Kubernetes Data Platform Deployment"
 
-    local max_attempts=30
-    for i in $(seq 1 $max_attempts); do
-        if kubectl exec postgres-primary-0 -n data-platform -- pg_isready -U postgres >/dev/null 2>&1; then
-            print_success "PostgreSQL is ready for connections"
-            return 0
-        fi
-
-        if [ $i -eq $max_attempts ]; then
-            print_error "PostgreSQL not ready after $max_attempts attempts"
-            kubectl logs postgres-primary-0 -n data-platform --tail=20
-            return 1
-        fi
-
-        print_status "Database check ($i/$max_attempts)..."
-        sleep 10
-    done
-}
-
-# Redis connectivity check
-wait_for_redis_ready() {
-    print_status "Waiting for Redis to accept connections..."
-
-    local max_attempts=20
-    for i in $(seq 1 $max_attempts); do
-        local redis_pod=$(kubectl get pods -n data-platform -l app=redis --no-headers -o custom-columns=":metadata.name" | head -1)
-        if [ -n "$redis_pod" ] && kubectl exec "$redis_pod" -n data-platform -- redis-cli ping >/dev/null 2>&1; then
-            print_success "Redis is ready for connections"
-            return 0
-        fi
-
-        if [ $i -eq $max_attempts ]; then
-            print_error "Redis not ready after $max_attempts attempts"
-            return 1
-        fi
-
-        print_status "Redis check ($i/$max_attempts)..."
-        sleep 5
-    done
-}
-
-print_header "Production Kubernetes Data Platform Deployment with Dependencies"
-
-# Pre-flight checks
+# Check if kubectl is available
 if ! command -v kubectl &> /dev/null; then
     print_error "kubectl is not available. Please install kubectl first."
     exit 1
 fi
 
+# Check if we can connect to cluster
 if ! kubectl cluster-info &> /dev/null; then
     print_error "Cannot connect to Kubernetes cluster. Please check your kubeconfig."
     exit 1
@@ -2412,85 +2133,46 @@ fi
 
 print_success "Connected to Kubernetes cluster"
 
-# Deploy with proper dependencies
-print_header "Step 1: Deploying Core Infrastructure"
-print_status "Deploying PostgreSQL database..."
+# Deploy in order
+print_header "Step 1: Deploying PostgreSQL Database"
 kubectl apply -f deployment/01-postgres-ha.yaml
+wait_for_statefulset "postgres" "data-platform" 600
+wait_for_job "postgres-init" "data-platform" 300
 
-print_status "Waiting for PostgreSQL StatefulSet..."
-wait_for_statefulset_with_retry "postgres" "data-platform" 3 600
-
-print_status "Verifying database connectivity..."
-wait_for_database_ready
-
-print_status "Running database initialization..."
-# Re-apply to ensure the job runs after database is ready
-kubectl apply -f deployment/01-postgres-ha.yaml
-wait_for_job_with_retry "postgres-init" "data-platform" 2 300
-
-print_header "Step 2: Deploying Message Broker"
-print_status "Deploying Redis..."
+print_header "Step 2: Deploying Redis Message Broker"
 kubectl apply -f deployment/02-redis.yaml
-wait_for_deployment_with_retry "redis-master" "data-platform" 3 300
+wait_for_deployment "redis-master" "data-platform" 300
 
-print_status "Verifying Redis connectivity..."
-wait_for_redis_ready
-
-print_header "Step 3: Deploying Monitoring Infrastructure"
-print_status "Deploying Prometheus and Grafana..."
+print_header "Step 3: Deploying Monitoring Stack"
 kubectl apply -f deployment/03-prometheus.yaml
 kubectl apply -f deployment/04-grafana.yaml
-
-# Wait for monitoring stack
-wait_for_deployment_with_retry "prometheus" "data-platform" 2 300
-wait_for_deployment_with_retry "grafana" "data-platform" 2 300
+wait_for_deployment "prometheus" "data-platform" 300
+wait_for_deployment "grafana" "data-platform" 300
 
 print_header "Step 4: Deploying Apache Airflow 2.8.1"
-print_status "Deploying Airflow with all components..."
 kubectl apply -f deployment/05-airflow.yaml
+wait_for_job "airflow-db-init-fixed" "data-platform" 600
+wait_for_deployment "airflow-webserver" "data-platform" 600
+wait_for_deployment "airflow-scheduler" "data-platform" 300
+wait_for_deployment "airflow-worker" "data-platform" 300
+wait_for_deployment "airflow-flower" "data-platform" 300
+wait_for_deployment "airflow-triggerer" "data-platform" 300
 
-print_status "Initializing Airflow database..."
-wait_for_job_with_retry "airflow-db-init-fixed" "data-platform" 2 600
-
-print_status "Starting Airflow webserver..."
-wait_for_deployment_with_retry "airflow-webserver" "data-platform" 3 600
-
-print_status "Starting Airflow scheduler..."
-wait_for_deployment_with_retry "airflow-scheduler" "data-platform" 2 300
-
-print_status "Starting Airflow workers..."
-wait_for_deployment_with_retry "airflow-worker" "data-platform" 2 300
-
-print_status "Starting Flower monitoring..."
-wait_for_deployment_with_retry "airflow-flower" "data-platform" 2 300
-
-print_status "Starting Airflow triggerer..."
-wait_for_deployment_with_retry "airflow-triggerer" "data-platform" 2 300
-
-print_header "Step 5: Deploying Storage Services"
-print_status "Deploying MinIO object storage..."
+print_header "Step 5: Deploying MinIO Object Storage"
 kubectl apply -f deployment/06-minio.yaml
-wait_for_deployment_with_retry "minio" "data-platform" 2 300
+wait_for_deployment "minio" "data-platform" 300
 
-print_status "Deploying SFTP and FileBrowser..."
+print_header "Step 6: Deploying SFTP Server and FileBrowser"
 kubectl apply -f deployment/07-sftp-filebrowser.yaml
-wait_for_deployment_with_retry "sftp-server" "data-platform" 2 300
-wait_for_deployment_with_retry "filebrowser" "data-platform" 2 300
+wait_for_deployment "sftp-server" "data-platform" 300
+wait_for_deployment "filebrowser" "data-platform" 300
 
 print_header "🎉 Production Deployment Completed!"
 echo ""
-print_success "All services deployed successfully with proper dependencies!"
-
-# Final status check
-print_status "Final deployment status:"
-kubectl get pods -n data-platform -o wide
-
-print_status "Service status:"
-kubectl get svc -n data-platform
-
+print_success "All services deployed successfully!"
 print_status "Next steps:"
 echo "  1. Run './scripts/check-health.sh' to verify all services"
-echo "  2. Run './scripts/fix-airflow-secrets.sh' to secure Airflow (if not done)"
+echo "  2. Run './scripts/fix-airflow-secrets.sh' to secure Airflow"
 echo "  3. Run './scripts/expose-services.sh' to enable external access"
 echo ""
 print_status "Or run './scripts/complete-setup.sh' for automated post-deployment setup"
@@ -2774,7 +2456,7 @@ echo "  🌸 Flower (Worker Monitoring):   http://localhost:5555"
 echo "      Real-time Celery worker monitoring"
 echo ""
 echo "  💾 MinIO (Object Storage):       http://localhost:9001"
-echo "      Username: minioadmin | Password: minio[Check credentials.env]"
+echo "      Username: minioadmin | Password: [Check credentials.env]"
 echo ""
 echo "  📈 Prometheus (Metrics):         http://localhost:9090"
 echo "      Raw metrics and monitoring data"
@@ -3012,7 +2694,7 @@ echo "│     Purpose: Data pipeline orchestration & DAG management          │
 echo "│                                                                     │"
 echo "│  💾 MinIO OBJECT STORAGE                                           │"
 echo "│     URL: http://$SERVER_IP:$MINIO_PORT                                       │"
-echo "│     Username: minioadmin | Password: minio[Check credentials.env]                 │"
+echo "│     Username: minioadmin | Password: [Check credentials.env]                │"
 echo "│     Purpose: S3-compatible data lake and object storage            │"
 echo "│                                                                     │"
 echo "│  🌸 FLOWER WORKER MONITORING                                       │"
@@ -3047,18 +2729,18 @@ cat > access-info.txt << EOL
 
 ### Primary Services
 - Airflow Orchestration:    http://$SERVER_IP:$AIRFLOW_PORT
-  Username: admin | Password: [Check credentials.env]
+  Username: admin | Password: [credentials.env]
   Features: DAG management, task scheduling, workflow monitoring
 
 - MinIO Object Storage:     http://$SERVER_IP:$MINIO_PORT
-  Username: minioadmin | Password: minio[Check credentials.env]
+  Username: minioadmin | Password: [credentials.env]
   Features: S3-compatible API, bucket management, data lake storage
 
 - Flower Worker Monitoring: http://$SERVER_IP:$FLOWER_PORT
   Features: Real-time worker status, task distribution, performance metrics
 
 - Grafana Dashboards:       http://$SERVER_IP:$GRAFANA_PORT
-  Username: admin | Password: [Check credentials.env]
+  Username: admin | Password: [credentials.env]
   Features: System monitoring, custom dashboards, alerting
 
 ## 📊 PLATFORM ARCHITECTURE:
@@ -3329,10 +3011,10 @@ After deployment, your services will be externally accessible:
 
 | Service | External Access | Credentials | Purpose |
 |---------|----------------|-------------|---------|
-| **🚀 Airflow** | http://YOUR_IP:PORT | admin / [Check credentials.env] | Workflow orchestration & DAG management |
-| **💾 MinIO** | http://YOUR_IP:PORT | minioadmin / minio[Check credentials.env] | S3-compatible object storage |
+| **🚀 Airflow** | http://YOUR_IP:PORT | admin / [credentials.env] | Workflow orchestration & DAG management |
+| **💾 MinIO** | http://YOUR_IP:PORT | minioadmin / [credentials.env] | S3-compatible object storage |
 | **🌸 Flower** | http://YOUR_IP:PORT | - | Real-time Celery worker monitoring |
-| **📊 Grafana** | http://YOUR_IP:PORT | admin / [Check credentials.env] | System monitoring & dashboards |
+| **📊 Grafana** | http://YOUR_IP:PORT | admin / [credentials.env] | System monitoring & dashboards |
 | **📁 SFTP** | sftp://USER@YOUR_IP:PORT | datauser / [credentials.env] | Secure file transfer & data exchange |
 | **🌐 FileBrowser** | http://YOUR_IP:PORT | admin / [credentials.env] | Web-based file management UI |
 
@@ -3600,12 +3282,11 @@ EOF
 
 # Main execution function
 main() {
-    validate_environment          # Enhanced validation
-    detect_k8s_env               # Enhanced storage validation
-    generate_secure_secrets
+    validate_environment          # ADD THIS LINE
+    detect_k8s_env
+    generate_secure_secrets      # ADD THIS LINE
     create_project_structure
-    create_kubernetes_secrets    # NEW: Create secrets first
-    create_all_deployments       # Will be modified to use secretKeyRef
+    create_all_deployments
     create_management_scripts
     create_post_deployment_scripts
     create_documentation
