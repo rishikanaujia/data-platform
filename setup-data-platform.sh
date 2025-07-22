@@ -114,13 +114,17 @@ generate_secure_secrets() {
     SFTP_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
     FILEBROWSER_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
 
+    # ADD THESE LINES after line with FILEBROWSER_ADMIN_PASSWORD generation:
+    KAFKA_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
+    KAFKA_USER_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
+
 
     # Generate Airflow-specific secrets
     FERNET_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
     WEBSERVER_SECRET_KEY=$(openssl rand -hex 32)
 
     # Validate all secrets were generated
-    local secrets=("POSTGRES_PASSWORD" "REDIS_PASSWORD" "MINIO_ROOT_PASSWORD" "AIRFLOW_ADMIN_PASSWORD" "GRAFANA_ADMIN_PASSWORD" "FERNET_KEY" "WEBSERVER_SECRET_KEY" "SFTP_PASSWORD" "FILEBROWSER_ADMIN_PASSWORD")
+    local secrets=("POSTGRES_PASSWORD" "REDIS_PASSWORD" "MINIO_ROOT_PASSWORD" "AIRFLOW_ADMIN_PASSWORD" "GRAFANA_ADMIN_PASSWORD" "FERNET_KEY" "WEBSERVER_SECRET_KEY" "SFTP_PASSWORD" "FILEBROWSER_ADMIN_PASSWORD" "KAFKA_ADMIN_PASSWORD" "KAFKA_USER_PASSWORD")
     for secret in "${secrets[@]}"; do
         if [ -z "${!secret}" ]; then
             print_error "Failed to generate $secret"
@@ -169,6 +173,12 @@ SFTP_PASSWORD=$SFTP_PASSWORD
 # FileBrowser
 FILEBROWSER_ADMIN_USERNAME=admin
 FILEBROWSER_ADMIN_PASSWORD=$FILEBROWSER_ADMIN_PASSWORD
+
+# Kafka
+KAFKA_ADMIN_USERNAME=admin
+KAFKA_ADMIN_PASSWORD=$KAFKA_ADMIN_PASSWORD
+KAFKA_USER_USERNAME=user
+KAFKA_USER_PASSWORD=$KAFKA_USER_PASSWORD
 EOF
 
     chmod 600 "$credentials_file"
@@ -1643,7 +1653,8 @@ spec:
     name: console
   type: ClusterIP
 EOF
-
+# ADD this line after the MinIO creation:
+create_kafka_deployment
 # Create 07-sftp-filebrowser.yaml
     print_info "Creating SFTP server with FileBrowser UI..."
     cat > deployment/07-sftp-filebrowser.yaml << EOF
@@ -1912,6 +1923,338 @@ EOF
     print_success "All production deployment files created!"
 }
 
+# ADD AFTER create_all_deployments() function, BEFORE create_management_scripts():
+create_kafka_deployment() {
+    print_info "Creating Apache Kafka with KRaft (3 brokers)..."
+    cat > deployment/08-kafka.yaml << EOF
+# Apache Kafka with KRaft Controller - 3 Brokers Configuration
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kafka-secret
+  namespace: data-platform
+  labels:
+    app: kafka
+type: Opaque
+data:
+  admin-password: $(echo -n "$KAFKA_ADMIN_PASSWORD" | base64 -w 0)
+  user-password: $(echo -n "$KAFKA_USER_PASSWORD" | base64 -w 0)
+
+---
+# Kafka Controller (KRaft)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka-controller
+  namespace: data-platform
+  labels:
+    app: kafka
+    component: controller
+    tier: streaming
+spec:
+  serviceName: kafka-controller-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+      component: controller
+  template:
+    metadata:
+      labels:
+        app: kafka
+        component: controller
+        tier: streaming
+    spec:
+      containers:
+      - name: kafka-controller
+        image: bitnami/kafka:3.6
+        env:
+        - name: KAFKA_ENABLE_KRAFT
+          value: "yes"
+        - name: KAFKA_CFG_PROCESS_ROLES
+          value: "controller"
+        - name: KAFKA_CFG_CONTROLLER_QUORUM_VOTERS
+          value: "0@kafka-controller-0.kafka-controller-headless.data-platform.svc.cluster.local:9093"
+        - name: KAFKA_CFG_NODE_ID
+          value: "0"
+        - name: KAFKA_KRAFT_CLUSTER_ID
+          value: "abcdefghijklmnopqrstuv"
+        - name: KAFKA_CFG_CONTROLLER_LISTENER_NAMES
+          value: "CONTROLLER"
+        - name: KAFKA_CFG_LISTENERS
+          value: "CONTROLLER://:9093"
+        - name: ALLOW_PLAINTEXT_LISTENER
+          value: "yes"
+        ports:
+        - containerPort: 9093
+          name: controller
+        volumeMounts:
+        - name: kafka-controller-data
+          mountPath: /bitnami/kafka
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          tcpSocket:
+            port: 9093
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 9093
+          initialDelaySeconds: 5
+          periodSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: kafka-controller-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: $STORAGE_CLASS
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+# Kafka Broker StatefulSet (3 replicas)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka-broker
+  namespace: data-platform
+  labels:
+    app: kafka
+    component: broker
+    tier: streaming
+spec:
+  serviceName: kafka-broker-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: kafka
+      component: broker
+  template:
+    metadata:
+      labels:
+        app: kafka
+        component: broker
+        tier: streaming
+    spec:
+      containers:
+      - name: kafka-broker
+        image: bitnami/kafka:3.6
+        env:
+        - name: KAFKA_ENABLE_KRAFT
+          value: "yes"
+        - name: KAFKA_CFG_PROCESS_ROLES
+          value: "broker"
+        - name: KAFKA_CFG_CONTROLLER_QUORUM_VOTERS
+          value: "0@kafka-controller-0.kafka-controller-headless.data-platform.svc.cluster.local:9093"
+        - name: KAFKA_CFG_NODE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: KAFKA_KRAFT_CLUSTER_ID
+          value: "abcdefghijklmnopqrstuv"
+        - name: KAFKA_CFG_LISTENERS
+          value: "PLAINTEXT://:9092,EXTERNAL://:9094"
+        - name: KAFKA_CFG_ADVERTISED_LISTENERS
+          value: "PLAINTEXT://\$(MY_POD_NAME).kafka-broker-headless.data-platform.svc.cluster.local:9092,EXTERNAL://\$(MY_POD_IP):9094"
+        - name: KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP
+          value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+        - name: KAFKA_CFG_INTER_BROKER_LISTENER_NAME
+          value: "PLAINTEXT"
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE
+          value: "true"
+        - name: KAFKA_CFG_DEFAULT_REPLICATION_FACTOR
+          value: "3"
+        - name: KAFKA_CFG_MIN_INSYNC_REPLICAS
+          value: "2"
+        - name: ALLOW_PLAINTEXT_LISTENER
+          value: "yes"
+        ports:
+        - containerPort: 9092
+          name: kafka
+        - containerPort: 9094
+          name: external
+        volumeMounts:
+        - name: kafka-broker-data
+          mountPath: /bitnami/kafka
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          tcpSocket:
+            port: 9092
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 9092
+          initialDelaySeconds: 5
+          periodSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: kafka-broker-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: $STORAGE_CLASS
+      resources:
+        requests:
+          storage: 20Gi
+
+---
+# Kafka Controller Headless Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-controller-headless
+  namespace: data-platform
+  labels:
+    app: kafka
+    component: controller
+spec:
+  selector:
+    app: kafka
+    component: controller
+  ports:
+  - port: 9093
+    targetPort: 9093
+    name: controller
+  clusterIP: None
+
+---
+# Kafka Broker Headless Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-broker-headless
+  namespace: data-platform
+  labels:
+    app: kafka
+    component: broker
+spec:
+  selector:
+    app: kafka
+    component: broker
+  ports:
+  - port: 9092
+    targetPort: 9092
+    name: kafka
+  - port: 9094
+    targetPort: 9094
+    name: external
+  clusterIP: None
+
+---
+# Kafka External Access Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-external
+  namespace: data-platform
+  labels:
+    app: kafka
+    component: broker
+spec:
+  selector:
+    app: kafka
+    component: broker
+  ports:
+  - port: 9092
+    targetPort: 9092
+    name: kafka
+  type: ClusterIP
+
+---
+# Kafka UI for Management
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-ui
+  namespace: data-platform
+  labels:
+    app: kafka-ui
+    tier: management
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-ui
+  template:
+    metadata:
+      labels:
+        app: kafka-ui
+        tier: management
+    spec:
+      containers:
+      - name: kafka-ui
+        image: provectuslabs/kafka-ui:latest
+        env:
+        - name: KAFKA_CLUSTERS_0_NAME
+          value: "data-platform-kafka"
+        - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
+          value: "kafka-broker-0.kafka-broker-headless:9092,kafka-broker-1.kafka-broker-headless:9092,kafka-broker-2.kafka-broker-headless:9092"
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# Kafka UI Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-ui
+  namespace: data-platform
+  labels:
+    app: kafka-ui
+spec:
+  selector:
+    app: kafka-ui
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP
+EOF
+
+    print_success "Kafka deployment configuration created!"
+}
+
 # Create management scripts
 create_management_scripts() {
     print_header "Creating Management Scripts"
@@ -2167,6 +2510,13 @@ kubectl apply -f deployment/07-sftp-filebrowser.yaml
 wait_for_deployment "sftp-server" "data-platform" 300
 wait_for_deployment "filebrowser" "data-platform" 300
 
+# ADD after Step 6 in deploy.sh:
+print_header "Step 7: Deploying Apache Kafka Streaming"
+kubectl apply -f deployment/08-kafka.yaml
+wait_for_statefulset "kafka-controller" "data-platform" 300
+wait_for_statefulset "kafka-broker" "data-platform" 600
+wait_for_deployment "kafka-ui" "data-platform" 300
+
 print_header "🎉 Production Deployment Completed!"
 echo ""
 print_success "All services deployed successfully!"
@@ -2367,6 +2717,32 @@ else
     print_error "FileBrowser issues detected"
 fi
 
+# ADD in check-health.sh after FileBrowser check:
+# Kafka Controller
+KAFKA_CONTROLLER_STATUS=$(kubectl get pods -n data-platform -l component=controller --no-headers 2>/dev/null | grep "Running" | wc -l)
+if [ "$KAFKA_CONTROLLER_STATUS" -eq 1 ]; then
+    print_success "Kafka Controller is healthy"
+else
+    print_error "Kafka Controller issues detected"
+fi
+
+# Kafka Brokers
+KAFKA_BROKER_STATUS=$(kubectl get pods -n data-platform -l component=broker --no-headers 2>/dev/null | grep "Running" | wc -l)
+if [ "$KAFKA_BROKER_STATUS" -eq 3 ]; then
+    print_success "Kafka Brokers are healthy (3/3)"
+elif [ "$KAFKA_BROKER_STATUS" -gt 0 ]; then
+    print_warning "Some Kafka Brokers are running ($KAFKA_BROKER_STATUS/3)"
+else
+    print_error "No Kafka Brokers running"
+fi
+
+# Kafka UI
+KAFKA_UI_STATUS=$(kubectl get pods -n data-platform -l app=kafka-ui --no-headers 2>/dev/null | grep "Running" | wc -l)
+if [ "$KAFKA_UI_STATUS" -eq 1 ]; then
+    print_success "Kafka UI is healthy"
+else
+    print_error "Kafka UI issues detected"
+fi
 # Overall status
 echo ""
 print_header "Overall Platform Status"
@@ -2641,6 +3017,9 @@ kubectl patch svc airflow-flower -n data-platform -p '{"spec":{"type":"NodePort"
 kubectl patch svc grafana -n data-platform -p '{"spec":{"type":"NodePort"}}'
 kubectl patch svc sftp-server -n data-platform -p '{"spec":{"type":"NodePort"}}'
 kubectl patch svc filebrowser -n data-platform -p '{"spec":{"type":"NodePort"}}'
+# ADD after filebrowser patch:
+kubectl patch svc kafka-external -n data-platform -p '{"spec":{"type":"NodePort"}}'
+kubectl patch svc kafka-ui -n data-platform -p '{"spec":{"type":"NodePort"}}'
 
 
 print_success "All services converted to NodePort"
@@ -2677,6 +3056,8 @@ FLOWER_PORT=$(kubectl get svc airflow-flower -n data-platform -o jsonpath='{.spe
 GRAFANA_PORT=$(kubectl get svc grafana -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
 SFTP_PORT=$(kubectl get svc sftp-server -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
 FILEBROWSER_PORT=$(kubectl get svc filebrowser -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+KAFKA_PORT=$(kubectl get svc kafka-external -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+KAFKA_UI_PORT=$(kubectl get svc kafka-ui -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
 
 
 # Display access information
@@ -2715,6 +3096,11 @@ echo "│  🌐 FILEBROWSER WEB UI                                         │"
 echo "│     URL: http://$SERVER_IP:$FILEBROWSER_PORT                              │"
 echo "│     Username: admin | Password: [Check credentials.env]        │"
 echo "│     Purpose: Web-based file management and sharing             │"
+echo "│                                                                     │"
+echo "│  🔄 KAFKA STREAMING                                            │"
+echo "│     Brokers: kafka://$SERVER_IP:$KAFKA_PORT                           │"
+echo "│     UI: http://$SERVER_IP:$KAFKA_UI_PORT                             │"
+echo "│     Purpose: Real-time data streaming & message queuing        │"
 echo "└─────────────────────────────────────────────────────────────────────┘"
 echo ""
 
@@ -3017,6 +3403,7 @@ After deployment, your services will be externally accessible:
 | **📊 Grafana** | http://YOUR_IP:PORT | admin / [credentials.env] | System monitoring & dashboards |
 | **📁 SFTP** | sftp://USER@YOUR_IP:PORT | datauser / [credentials.env] | Secure file transfer & data exchange |
 | **🌐 FileBrowser** | http://YOUR_IP:PORT | admin / [credentials.env] | Web-based file management UI |
+| **🔄 Kafka** | kafka://YOUR_IP:PORT & http://YOUR_IP:PORT | - | Real-time streaming & messaging |
 
 
 *Exact URLs will be provided after running the setup scripts and saved in `access-info.txt`*
@@ -3304,7 +3691,9 @@ main() {
     echo "│   ├── 03-prometheus.yaml   # Metrics collection"
     echo "│   ├── 04-grafana.yaml      # Monitoring dashboards"
     echo "│   ├── 05-airflow.yaml      # Airflow 2.8.1 CeleryExecutor"
-    echo "│   └── 06-minio.yaml        # S3-compatible storage"
+    echo "│   ├── 06-minio.yaml        # S3-compatible storage"
+    echo "│   ├── 07-sftp-filebrowser.yaml # SFTP and FileBrowser"
+    echo "│   └── 08-kafka.yaml        # Apache Kafka streaming"
     echo "├── scripts/"
     echo "│   ├── setup-environment.sh # Production environment setup"
     echo "│   ├── deploy.sh            # Core platform deployment"
