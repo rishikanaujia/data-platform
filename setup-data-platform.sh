@@ -56,6 +56,10 @@ GRAFANA_ADMIN_PASSWORD=""
 FERNET_KEY=""
 WEBSERVER_SECRET_KEY=""
 
+SFTP_USERNAME=""
+SFTP_PASSWORD=""
+FILEBROWSER_ADMIN_PASSWORD=""
+
 
 # Enhanced environment validation
 validate_environment() {
@@ -105,12 +109,22 @@ generate_secure_secrets() {
     AIRFLOW_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
     GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
 
+    # ADD THESE NEW LINES:
+    SFTP_USERNAME="datauser"
+    SFTP_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
+    FILEBROWSER_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
+
+    # ADD THESE LINES after line with FILEBROWSER_ADMIN_PASSWORD generation:
+    KAFKA_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
+    KAFKA_USER_PASSWORD=$(openssl rand -base64 16 | tr -d '/+' | cut -c1-16)
+
+
     # Generate Airflow-specific secrets
     FERNET_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
     WEBSERVER_SECRET_KEY=$(openssl rand -hex 32)
 
     # Validate all secrets were generated
-    local secrets=("POSTGRES_PASSWORD" "REDIS_PASSWORD" "MINIO_ROOT_PASSWORD" "AIRFLOW_ADMIN_PASSWORD" "GRAFANA_ADMIN_PASSWORD" "FERNET_KEY" "WEBSERVER_SECRET_KEY")
+    local secrets=("POSTGRES_PASSWORD" "REDIS_PASSWORD" "MINIO_ROOT_PASSWORD" "AIRFLOW_ADMIN_PASSWORD" "GRAFANA_ADMIN_PASSWORD" "FERNET_KEY" "WEBSERVER_SECRET_KEY" "SFTP_PASSWORD" "FILEBROWSER_ADMIN_PASSWORD" "KAFKA_ADMIN_PASSWORD" "KAFKA_USER_PASSWORD")
     for secret in "${secrets[@]}"; do
         if [ -z "${!secret}" ]; then
             print_error "Failed to generate $secret"
@@ -151,6 +165,20 @@ AIRFLOW_FERNET_KEY=$FERNET_KEY
 # Grafana
 GRAFANA_ADMIN_USERNAME=admin
 GRAFANA_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD
+
+# SFTP Server
+SFTP_USERNAME=$SFTP_USERNAME
+SFTP_PASSWORD=$SFTP_PASSWORD
+
+# FileBrowser
+FILEBROWSER_ADMIN_USERNAME=admin
+FILEBROWSER_ADMIN_PASSWORD=$FILEBROWSER_ADMIN_PASSWORD
+
+# Kafka
+KAFKA_ADMIN_USERNAME=admin
+KAFKA_ADMIN_PASSWORD=$KAFKA_ADMIN_PASSWORD
+KAFKA_USER_USERNAME=user
+KAFKA_USER_PASSWORD=$KAFKA_USER_PASSWORD
 EOF
 
     chmod 600 "$credentials_file"
@@ -924,6 +952,11 @@ data:
     hide_sensitive_variable_fields = True
     sensitive_variable_fields =
 
+    [triggerer]
+    default_capacity = 1000
+    job_heartbeat_sec = 5
+    heartbeat_sec = 5
+
 ---
 apiVersion: v1
 kind: Secret
@@ -1184,13 +1217,11 @@ spec:
         livenessProbe:
           exec:
             command:
-            - /bin/bash
-            - -c
-            - "pgrep -f 'airflow scheduler'"
+            - test
+            - -f
+            - /opt/airflow/logs/dag_processor_manager/dag_processor_manager.log
           initialDelaySeconds: 120
           periodSeconds: 30
-          timeoutSeconds: 10
-          failureThreshold: 3
       volumes:
       - name: airflow-config
         configMap:
@@ -1356,6 +1387,81 @@ spec:
       - name: airflow-config
         configMap:
           name: airflow-config
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-triggerer
+  namespace: data-platform
+  labels:
+    app: airflow
+    component: triggerer
+    tier: orchestration
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+      component: triggerer
+  template:
+    metadata:
+      labels:
+        app: airflow
+        component: triggerer
+        tier: orchestration
+    spec:
+      containers:
+      - name: airflow-triggerer
+        image: apache/airflow:2.8.1-python3.11
+        command:
+        - /bin/bash
+        - -c
+        - |
+          # Start triggerer
+          airflow triggerer
+        env:
+        - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+          value: "postgresql+psycopg2://postgres:$POSTGRES_PASSWORD@postgres-primary:5432/airflow"
+        - name: AIRFLOW__CORE__FERNET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: fernet-key
+        - name: AIRFLOW__CELERY__BROKER_URL
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
+        - name: AIRFLOW__CELERY__RESULT_BACKEND
+          value: "redis://:$REDIS_PASSWORD@redis:6379/1"
+        - name: AIRFLOW__CORE__EXECUTOR
+          value: "CeleryExecutor"
+        - name: AIRFLOW__CORE__LOAD_EXAMPLES
+          value: "False"
+        - name: AIRFLOW__WEBSERVER__SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: airflow-secret
+              key: webserver-secret-key
+        volumeMounts:
+        - name: airflow-config
+          mountPath: /opt/airflow/airflow.cfg
+          subPath: airflow.cfg
+        - name: airflow-logs
+          mountPath: /opt/airflow/logs
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+
+      volumes:
+      - name: airflow-config
+        configMap:
+          name: airflow-config
+      - name: airflow-logs
+        persistentVolumeClaim:
+          claimName: airflow-logs-pvc
 
 ---
 apiVersion: v1
@@ -1547,8 +1653,600 @@ spec:
     name: console
   type: ClusterIP
 EOF
+# ADD this line after the MinIO creation:
+create_kafka_deployment
+# Create 07-sftp-filebrowser.yaml
+    print_info "Creating SFTP server with FileBrowser UI..."
+    cat > deployment/07-sftp-filebrowser.yaml << EOF
+# SFTP Server and FileBrowser Web UI Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sftp-config
+  namespace: data-platform
+  labels:
+    app: sftp
+    tier: storage
+data:
+  users.conf: |
+    $SFTP_USERNAME:$SFTP_PASSWORD:1001:1001:upload,download,modify,delete
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sftp-secret
+  namespace: data-platform
+  labels:
+    app: sftp
+type: Opaque
+data:
+  username: $(echo -n "$SFTP_USERNAME" | base64 -w 0)
+  password: $(echo -n "$SFTP_PASSWORD" | base64 -w 0)
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sftp-server
+  namespace: data-platform
+  labels:
+    app: sftp
+    tier: storage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sftp
+  template:
+    metadata:
+      labels:
+        app: sftp
+        tier: storage
+    spec:
+      containers:
+      - name: sftp
+        image: atmoz/sftp:latest
+        env:
+        - name: SFTP_USERS
+          value: "$SFTP_USERNAME:$SFTP_PASSWORD:1001:1001:data"
+        ports:
+        - containerPort: 22
+          name: sftp
+        volumeMounts:
+        - name: sftp-data
+          mountPath: /home/$SFTP_USERNAME/data
+        - name: sftp-keys
+          mountPath: /etc/ssh/keys
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          tcpSocket:
+            port: 22
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          tcpSocket:
+            port: 22
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: sftp-data
+        persistentVolumeClaim:
+          claimName: sftp-data-pvc
+      - name: sftp-keys
+        emptyDir: {}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filebrowser
+  namespace: data-platform
+  labels:
+    app: filebrowser
+    tier: storage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: filebrowser
+  template:
+    metadata:
+      labels:
+        app: filebrowser
+        tier: storage
+    spec:
+      containers:
+      - name: filebrowser
+        image: filebrowser/filebrowser:latest
+        env:
+        - name: FB_DATABASE
+          value: "/database/filebrowser.db"
+        - name: FB_CONFIG
+          value: "/config/settings.json"
+        ports:
+        - containerPort: 8080    # Changed from 80 to 8080
+          name: web
+        volumeMounts:
+        - name: sftp-data
+          mountPath: /srv
+        - name: filebrowser-db
+          mountPath: /database
+        - name: filebrowser-config
+          mountPath: /config
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "250m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080           # Changed from 80 to 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080           # Changed from 80 to 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      initContainers:
+      - name: filebrowser-init
+        image: filebrowser/filebrowser:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Create initial config
+          mkdir -p /config /database
+          if [ ! -f /database/filebrowser.db ]; then
+            filebrowser config init --database /database/filebrowser.db
+            filebrowser users add admin $FILEBROWSER_ADMIN_PASSWORD --perm.admin --database /database/filebrowser.db
+          fi
+
+          # Create settings.json with port 8080
+          cat > /config/settings.json << EOL
+          {
+            "port": 8080,
+            "baseURL": "",
+            "address": "",
+            "log": "stdout",
+            "database": "/database/filebrowser.db",
+            "root": "/srv"
+          }
+          EOL
+        env:
+        - name: FILEBROWSER_ADMIN_PASSWORD
+          value: "$FILEBROWSER_ADMIN_PASSWORD"
+        volumeMounts:
+        - name: filebrowser-db
+          mountPath: /database
+        - name: filebrowser-config
+          mountPath: /config
+      volumes:
+      - name: sftp-data
+        persistentVolumeClaim:
+          claimName: sftp-data-pvc
+      - name: filebrowser-db
+        persistentVolumeClaim:
+          claimName: filebrowser-db-pvc
+      - name: filebrowser-config
+        persistentVolumeClaim:
+          claimName: filebrowser-config-pvc
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sftp-data-pvc
+  namespace: data-platform
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: $STORAGE_CLASS
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: filebrowser-db-pvc
+  namespace: data-platform
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: $STORAGE_CLASS
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: filebrowser-config-pvc
+  namespace: data-platform
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: $STORAGE_CLASS
+  resources:
+    requests:
+      storage: 100Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sftp-server
+  namespace: data-platform
+  labels:
+    app: sftp
+spec:
+  selector:
+    app: sftp
+  ports:
+  - port: 22
+    targetPort: 22
+    name: sftp
+    protocol: TCP
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: filebrowser
+  namespace: data-platform
+  labels:
+    app: filebrowser
+spec:
+  selector:
+    app: filebrowser
+  ports:
+  - port: 80              # External port stays 80
+    targetPort: 8080      # Internal port changed to 8080
+    name: web
+EOF
 
     print_success "All production deployment files created!"
+}
+
+# ADD AFTER create_all_deployments() function, BEFORE create_management_scripts():
+create_kafka_deployment() {
+    print_info "Creating Apache Kafka with KRaft (3 brokers)..."
+    cat > deployment/08-kafka.yaml << EOF
+# Apache Kafka with KRaft Controller - 3 Brokers Configuration
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kafka-secret
+  namespace: data-platform
+  labels:
+    app: kafka
+type: Opaque
+data:
+  admin-password: $(echo -n "$KAFKA_ADMIN_PASSWORD" | base64 -w 0)
+  user-password: $(echo -n "$KAFKA_USER_PASSWORD" | base64 -w 0)
+
+---
+# Kafka Controller (KRaft)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka-controller
+  namespace: data-platform
+  labels:
+    app: kafka
+    component: controller
+    tier: streaming
+spec:
+  serviceName: kafka-controller-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+      component: controller
+  template:
+    metadata:
+      labels:
+        app: kafka
+        component: controller
+        tier: streaming
+    spec:
+      containers:
+      - name: kafka-controller
+        image: bitnami/kafka:3.6
+        env:
+        - name: KAFKA_ENABLE_KRAFT
+          value: "yes"
+        - name: KAFKA_CFG_PROCESS_ROLES
+          value: "controller"
+        - name: KAFKA_CFG_CONTROLLER_QUORUM_VOTERS
+          value: "0@kafka-controller-0.kafka-controller-headless.data-platform.svc.cluster.local:9093"
+        - name: KAFKA_CFG_NODE_ID
+          value: "0"
+        - name: KAFKA_KRAFT_CLUSTER_ID
+          value: "abcdefghijklmnopqrstuv"
+        - name: KAFKA_CFG_CONTROLLER_LISTENER_NAMES
+          value: "CONTROLLER"
+        - name: KAFKA_CFG_LISTENERS
+          value: "CONTROLLER://:9093"
+        - name: KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP
+          value: "CONTROLLER:PLAINTEXT"
+        - name: ALLOW_PLAINTEXT_LISTENER
+          value: "yes"
+        ports:
+        - containerPort: 9093
+          name: controller
+        volumeMounts:
+        - name: kafka-controller-data
+          mountPath: /bitnami/kafka
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          tcpSocket:
+            port: 9093
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 9093
+          initialDelaySeconds: 5
+          periodSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: kafka-controller-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: $STORAGE_CLASS
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+# Kafka Broker StatefulSet (1 replicas)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka-broker
+  namespace: data-platform
+  labels:
+    app: kafka
+    component: broker
+    tier: streaming
+spec:
+  serviceName: kafka-broker-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+      component: broker
+  template:
+    metadata:
+      labels:
+        app: kafka
+        component: broker
+        tier: streaming
+    spec:
+      containers:
+      - name: kafka-broker
+        image: bitnami/kafka:3.6
+        env:
+        - name: KAFKA_ENABLE_KRAFT
+          value: "yes"
+        - name: KAFKA_CFG_PROCESS_ROLES
+          value: "broker"
+        - name: KAFKA_CFG_CONTROLLER_QUORUM_VOTERS
+          value: "0@kafka-controller-0.kafka-controller-headless.data-platform.svc.cluster.local:9093"
+        - name: KAFKA_CFG_CONTROLLER_LISTENER_NAMES
+          value: "CONTROLLER"
+        - name: KAFKA_CFG_NODE_ID
+          value: "1"
+        - name: KAFKA_KRAFT_CLUSTER_ID
+          value: "abcdefghijklmnopqrstuv"
+        - name: KAFKA_CFG_LISTENERS
+          value: "PLAINTEXT://:9092,EXTERNAL://:9094"
+        - name: KAFKA_CFG_ADVERTISED_LISTENERS
+          value: "PLAINTEXT://kafka-broker-0.kafka-broker-headless.data-platform.svc.cluster.local:9092,EXTERNAL://kafka-broker-0.kafka-broker-headless.data-platform.svc.cluster.local:9094"
+        - name: KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP
+          value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+        - name: KAFKA_CFG_INTER_BROKER_LISTENER_NAME
+          value: "PLAINTEXT"
+        - name: KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE
+          value: "true"
+        - name: KAFKA_CFG_DEFAULT_REPLICATION_FACTOR
+          value: "1"
+        - name: KAFKA_CFG_MIN_INSYNC_REPLICAS
+          value: "1"
+        - name: ALLOW_PLAINTEXT_LISTENER
+          value: "yes"
+        ports:
+        - containerPort: 9092
+          name: kafka
+        - containerPort: 9094
+          name: external
+        volumeMounts:
+        - name: kafka-broker-data
+          mountPath: /bitnami/kafka
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          tcpSocket:
+            port: 9092
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 9092
+          initialDelaySeconds: 5
+          periodSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: kafka-broker-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: $STORAGE_CLASS
+      resources:
+        requests:
+          storage: 20Gi
+
+---
+# Kafka Controller Headless Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-controller-headless
+  namespace: data-platform
+  labels:
+    app: kafka
+    component: controller
+spec:
+  selector:
+    app: kafka
+    component: controller
+  ports:
+  - port: 9093
+    targetPort: 9093
+    name: controller
+  clusterIP: None
+
+---
+# Kafka Broker Headless Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-broker-headless
+  namespace: data-platform
+  labels:
+    app: kafka
+    component: broker
+spec:
+  selector:
+    app: kafka
+    component: broker
+  ports:
+  - port: 9092
+    targetPort: 9092
+    name: kafka
+  - port: 9094
+    targetPort: 9094
+    name: external
+  clusterIP: None
+
+---
+# Kafka External Access Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-external
+  namespace: data-platform
+  labels:
+    app: kafka
+    component: broker
+spec:
+  selector:
+    app: kafka
+    component: broker
+  ports:
+  - port: 9092
+    targetPort: 9092
+    name: kafka
+  type: ClusterIP
+
+---
+# Kafka UI for Management
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-ui
+  namespace: data-platform
+  labels:
+    app: kafka-ui
+    tier: management
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-ui
+  template:
+    metadata:
+      labels:
+        app: kafka-ui
+        tier: management
+    spec:
+      containers:
+      - name: kafka-ui
+        image: provectuslabs/kafka-ui:latest
+        env:
+        - name: KAFKA_CLUSTERS_0_NAME
+          value: "data-platform-kafka"
+        - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
+          value: "kafka-broker-0.kafka-broker-headless:9092,kafka-broker-1.kafka-broker-headless:9092,kafka-broker-2.kafka-broker-headless:9092"
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# Kafka UI Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-ui
+  namespace: data-platform
+  labels:
+    app: kafka-ui
+spec:
+  selector:
+    app: kafka-ui
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP
+EOF
+
+    print_success "Kafka deployment configuration created!"
 }
 
 # Create management scripts
@@ -1795,10 +2493,23 @@ wait_for_deployment "airflow-webserver" "data-platform" 600
 wait_for_deployment "airflow-scheduler" "data-platform" 300
 wait_for_deployment "airflow-worker" "data-platform" 300
 wait_for_deployment "airflow-flower" "data-platform" 300
+wait_for_deployment "airflow-triggerer" "data-platform" 300
 
 print_header "Step 5: Deploying MinIO Object Storage"
 kubectl apply -f deployment/06-minio.yaml
 wait_for_deployment "minio" "data-platform" 300
+
+print_header "Step 6: Deploying SFTP Server and FileBrowser"
+kubectl apply -f deployment/07-sftp-filebrowser.yaml
+wait_for_deployment "sftp-server" "data-platform" 300
+wait_for_deployment "filebrowser" "data-platform" 300
+
+# ADD after Step 6 in deploy.sh:
+print_header "Step 7: Deploying Apache Kafka Streaming"
+kubectl apply -f deployment/08-kafka.yaml
+wait_for_statefulset "kafka-controller" "data-platform" 300
+wait_for_statefulset "kafka-broker" "data-platform" 600
+wait_for_deployment "kafka-ui" "data-platform" 300
 
 print_header "🎉 Production Deployment Completed!"
 echo ""
@@ -1926,6 +2637,7 @@ AIRFLOW_WEBSERVER=$(kubectl get pods -n data-platform -l component=webserver --n
 AIRFLOW_SCHEDULER=$(kubectl get pods -n data-platform -l component=scheduler --no-headers 2>/dev/null | grep "Running" | wc -l)
 AIRFLOW_WORKERS=$(kubectl get pods -n data-platform -l component=worker --no-headers 2>/dev/null | grep "Running" | wc -l)
 AIRFLOW_FLOWER=$(kubectl get pods -n data-platform -l component=flower --no-headers 2>/dev/null | grep "Running" | wc -l)
+AIRFLOW_TRIGGERER=$(kubectl get pods -n data-platform -l component=triggerer --no-headers 2>/dev/null | grep "Running" | wc -l)
 
 if [ "$AIRFLOW_WEBSERVER" -eq 1 ]; then
     print_success "Airflow Webserver is healthy"
@@ -1953,6 +2665,13 @@ else
     print_error "Flower monitoring issues detected"
 fi
 
+if [ "$AIRFLOW_TRIGGERER" -eq 1 ]; then
+    print_success "Airflow Triggerer is healthy"
+else
+    print_error "Airflow Triggerer issues detected"
+fi
+
+
 # MinIO
 MINIO_STATUS=$(kubectl get pods -n data-platform -l app=minio --no-headers 2>/dev/null | grep "Running" | wc -l)
 if [ "$MINIO_STATUS" -eq 1 ]; then
@@ -1977,6 +2696,47 @@ else
     print_error "Grafana issues detected"
 fi
 
+SFTP_STATUS=$(kubectl get pods -n data-platform -l app=sftp --no-headers 2>/dev/null | grep "Running" | wc -l)
+if [ "$SFTP_STATUS" -eq 1 ]; then
+    print_success "SFTP Server is healthy"
+else
+    print_error "SFTP Server issues detected"
+fi
+
+# FileBrowser
+FILEBROWSER_STATUS=$(kubectl get pods -n data-platform -l app=filebrowser --no-headers 2>/dev/null | grep "Running" | wc -l)
+if [ "$FILEBROWSER_STATUS" -eq 1 ]; then
+    print_success "FileBrowser is healthy"
+else
+    print_error "FileBrowser issues detected"
+fi
+
+# ADD in check-health.sh after FileBrowser check:
+# Kafka Controller
+KAFKA_CONTROLLER_STATUS=$(kubectl get pods -n data-platform -l component=controller --no-headers 2>/dev/null | grep "Running" | wc -l)
+if [ "$KAFKA_CONTROLLER_STATUS" -eq 1 ]; then
+    print_success "Kafka Controller is healthy"
+else
+    print_error "Kafka Controller issues detected"
+fi
+
+# Kafka Brokers
+KAFKA_BROKER_STATUS=$(kubectl get pods -n data-platform -l component=broker --no-headers 2>/dev/null | grep "Running" | wc -l)
+if [ "$KAFKA_BROKER_STATUS" -eq 3 ]; then
+    print_success "Kafka Brokers are healthy (3/3)"
+elif [ "$KAFKA_BROKER_STATUS" -gt 0 ]; then
+    print_warning "Some Kafka Brokers are running ($KAFKA_BROKER_STATUS/3)"
+else
+    print_error "No Kafka Brokers running"
+fi
+
+# Kafka UI
+KAFKA_UI_STATUS=$(kubectl get pods -n data-platform -l app=kafka-ui --no-headers 2>/dev/null | grep "Running" | wc -l)
+if [ "$KAFKA_UI_STATUS" -eq 1 ]; then
+    print_success "Kafka UI is healthy"
+else
+    print_error "Kafka UI issues detected"
+fi
 # Overall status
 echo ""
 print_header "Overall Platform Status"
@@ -2048,6 +2808,8 @@ start_port_forward "airflow-webserver" 8080 8080
 start_port_forward "airflow-flower" 5555 5555
 start_port_forward "minio-console" 9001 9001
 start_port_forward "prometheus" 9090 9090
+start_port_forward "sftp-server" 2222 22
+start_port_forward "filebrowser" 8090 8080
 
 echo ""
 print_success "All port-forwards started successfully!"
@@ -2055,19 +2817,25 @@ echo ""
 print_header "🌐 Access Your Services"
 echo ""
 echo "  🔍 Grafana (Dashboards):         http://localhost:3000"
-echo "      Username: admin | Password: admin123"
+echo "      Username: admin | Password: [Check credentials.env]"
 echo ""
 echo "  ⚙️  Airflow (Orchestration):      http://localhost:8080"
-echo "      Username: admin | Password: admin123"
+echo "      Username: admin | Password: [Check credentials.env]"
 echo ""
 echo "  🌸 Flower (Worker Monitoring):   http://localhost:5555"
 echo "      Real-time Celery worker monitoring"
 echo ""
 echo "  💾 MinIO (Object Storage):       http://localhost:9001"
-echo "      Username: minioadmin | Password: minioadmin123"
+echo "      Username: minioadmin | Password: [Check credentials.env]"
 echo ""
 echo "  📈 Prometheus (Metrics):         http://localhost:9090"
 echo "      Raw metrics and monitoring data"
+echo ""
+echo "  📁 SFTP Server:                  sftp://datauser@localhost:2222"
+echo "      Password: [Check credentials.env file]"
+echo ""
+echo "  🌐 FileBrowser:                  http://localhost:8090"
+echo "      Username: admin | Password: [Check credentials.env]"
 echo ""
 print_info "Press Ctrl+C to stop all port-forwards"
 
@@ -2241,6 +3009,12 @@ kubectl patch svc airflow-webserver -n data-platform -p '{"spec":{"type":"NodePo
 kubectl patch svc minio-console -n data-platform -p '{"spec":{"type":"NodePort"}}'
 kubectl patch svc airflow-flower -n data-platform -p '{"spec":{"type":"NodePort"}}'
 kubectl patch svc grafana -n data-platform -p '{"spec":{"type":"NodePort"}}'
+kubectl patch svc sftp-server -n data-platform -p '{"spec":{"type":"NodePort"}}'
+kubectl patch svc filebrowser -n data-platform -p '{"spec":{"type":"NodePort"}}'
+# ADD after filebrowser patch:
+kubectl patch svc kafka-external -n data-platform -p '{"spec":{"type":"NodePort"}}'
+kubectl patch svc kafka-ui -n data-platform -p '{"spec":{"type":"NodePort"}}'
+
 
 print_success "All services converted to NodePort"
 
@@ -2274,6 +3048,11 @@ AIRFLOW_PORT=$(kubectl get svc airflow-webserver -n data-platform -o jsonpath='{
 MINIO_PORT=$(kubectl get svc minio-console -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
 FLOWER_PORT=$(kubectl get svc airflow-flower -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
 GRAFANA_PORT=$(kubectl get svc grafana -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+SFTP_PORT=$(kubectl get svc sftp-server -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+FILEBROWSER_PORT=$(kubectl get svc filebrowser -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+KAFKA_PORT=$(kubectl get svc kafka-external -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+KAFKA_UI_PORT=$(kubectl get svc kafka-ui -n data-platform -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+
 
 # Display access information
 echo ""
@@ -2285,12 +3064,12 @@ echo "├───────────────────────�
 echo "│                                                                     │"
 echo "│  🚀 AIRFLOW ORCHESTRATION                                          │"
 echo "│     URL: http://$SERVER_IP:$AIRFLOW_PORT                                      │"
-echo "│     Username: admin | Password: admin123                           │"
+echo "│     Username: admin | Password: [Check credentials.env]                           │"
 echo "│     Purpose: Data pipeline orchestration & DAG management          │"
 echo "│                                                                     │"
 echo "│  💾 MinIO OBJECT STORAGE                                           │"
 echo "│     URL: http://$SERVER_IP:$MINIO_PORT                                       │"
-echo "│     Username: minioadmin | Password: minioadmin123                 │"
+echo "│     Username: minioadmin | Password: [Check credentials.env]                │"
 echo "│     Purpose: S3-compatible data lake and object storage            │"
 echo "│                                                                     │"
 echo "│  🌸 FLOWER WORKER MONITORING                                       │"
@@ -2299,9 +3078,23 @@ echo "│     Purpose: Real-time Celery worker monitoring & task tracking    │
 echo "│                                                                     │"
 echo "│  📊 GRAFANA DASHBOARDS                                             │"
 echo "│     URL: http://$SERVER_IP:$GRAFANA_PORT                                     │"
-echo "│     Username: admin | Password: admin123                           │"
+echo "│     Username: admin | Password: [Check credentials.env]                           │"
 echo "│     Purpose: System metrics, monitoring & alerting dashboards      │"
 echo "│                                                                     │"
+echo "│  📁 SFTP FILE SERVER                                           │"
+echo "│     SFTP: sftp://datauser@$SERVER_IP:$SFTP_PORT                           │"
+echo "│     Password: [Check credentials.env file]                     │"
+echo "│     Purpose: Secure file transfer and data exchange            │"
+echo "│                                                                     │"
+echo "│  🌐 FILEBROWSER WEB UI                                         │"
+echo "│     URL: http://$SERVER_IP:$FILEBROWSER_PORT                              │"
+echo "│     Username: admin | Password: [Check credentials.env]        │"
+echo "│     Purpose: Web-based file management and sharing             │"
+echo "│                                                                     │"
+echo "│  🔄 KAFKA STREAMING                                            │"
+echo "│     Brokers: kafka://$SERVER_IP:$KAFKA_PORT                           │"
+echo "│     UI: http://$SERVER_IP:$KAFKA_UI_PORT                             │"
+echo "│     Purpose: Real-time data streaming & message queuing        │"
 echo "└─────────────────────────────────────────────────────────────────────┘"
 echo ""
 
@@ -2316,18 +3109,18 @@ cat > access-info.txt << EOL
 
 ### Primary Services
 - Airflow Orchestration:    http://$SERVER_IP:$AIRFLOW_PORT
-  Username: admin | Password: admin123
+  Username: admin | Password: [credentials.env]
   Features: DAG management, task scheduling, workflow monitoring
 
 - MinIO Object Storage:     http://$SERVER_IP:$MINIO_PORT
-  Username: minioadmin | Password: minioadmin123
+  Username: minioadmin | Password: [credentials.env]
   Features: S3-compatible API, bucket management, data lake storage
 
 - Flower Worker Monitoring: http://$SERVER_IP:$FLOWER_PORT
   Features: Real-time worker status, task distribution, performance metrics
 
 - Grafana Dashboards:       http://$SERVER_IP:$GRAFANA_PORT
-  Username: admin | Password: admin123
+  Username: admin | Password: [credentials.env]
   Features: System monitoring, custom dashboards, alerting
 
 ## 📊 PLATFORM ARCHITECTURE:
@@ -2598,10 +3391,14 @@ After deployment, your services will be externally accessible:
 
 | Service | External Access | Credentials | Purpose |
 |---------|----------------|-------------|---------|
-| **🚀 Airflow** | http://YOUR_IP:PORT | admin / admin123 | Workflow orchestration & DAG management |
-| **💾 MinIO** | http://YOUR_IP:PORT | minioadmin / minioadmin123 | S3-compatible object storage |
+| **🚀 Airflow** | http://YOUR_IP:PORT | admin / [credentials.env] | Workflow orchestration & DAG management |
+| **💾 MinIO** | http://YOUR_IP:PORT | minioadmin / [credentials.env] | S3-compatible object storage |
 | **🌸 Flower** | http://YOUR_IP:PORT | - | Real-time Celery worker monitoring |
-| **📊 Grafana** | http://YOUR_IP:PORT | admin / admin123 | System monitoring & dashboards |
+| **📊 Grafana** | http://YOUR_IP:PORT | admin / [credentials.env] | System monitoring & dashboards |
+| **📁 SFTP** | sftp://USER@YOUR_IP:PORT | datauser / [credentials.env] | Secure file transfer & data exchange |
+| **🌐 FileBrowser** | http://YOUR_IP:PORT | admin / [credentials.env] | Web-based file management UI |
+| **🔄 Kafka** | kafka://YOUR_IP:PORT & http://YOUR_IP:PORT | - | Real-time streaming & messaging |
+
 
 *Exact URLs will be provided after running the setup scripts and saved in `access-info.txt`*
 
@@ -2888,7 +3685,9 @@ main() {
     echo "│   ├── 03-prometheus.yaml   # Metrics collection"
     echo "│   ├── 04-grafana.yaml      # Monitoring dashboards"
     echo "│   ├── 05-airflow.yaml      # Airflow 2.8.1 CeleryExecutor"
-    echo "│   └── 06-minio.yaml        # S3-compatible storage"
+    echo "│   ├── 06-minio.yaml        # S3-compatible storage"
+    echo "│   ├── 07-sftp-filebrowser.yaml # SFTP and FileBrowser"
+    echo "│   └── 08-kafka.yaml        # Apache Kafka streaming"
     echo "├── scripts/"
     echo "│   ├── setup-environment.sh # Production environment setup"
     echo "│   ├── deploy.sh            # Core platform deployment"
