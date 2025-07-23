@@ -1983,6 +1983,8 @@ spec:
           value: "CONTROLLER"
         - name: KAFKA_CFG_LISTENERS
           value: "CONTROLLER://:9093"
+        - name: KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP
+          value: "CONTROLLER:PLAINTEXT"
         - name: ALLOW_PLAINTEXT_LISTENER
           value: "yes"
         ports:
@@ -2019,7 +2021,7 @@ spec:
           storage: 10Gi
 
 ---
-# Kafka Broker StatefulSet (3 replicas)
+# Kafka Broker StatefulSet (1 replicas)
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -2031,7 +2033,7 @@ metadata:
     tier: streaming
 spec:
   serviceName: kafka-broker-headless
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
       app: kafka
@@ -2053,34 +2055,26 @@ spec:
           value: "broker"
         - name: KAFKA_CFG_CONTROLLER_QUORUM_VOTERS
           value: "0@kafka-controller-0.kafka-controller-headless.data-platform.svc.cluster.local:9093"
+        - name: KAFKA_CFG_CONTROLLER_LISTENER_NAMES
+          value: "CONTROLLER"
         - name: KAFKA_CFG_NODE_ID
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.name
+          value: "1"
         - name: KAFKA_KRAFT_CLUSTER_ID
           value: "abcdefghijklmnopqrstuv"
         - name: KAFKA_CFG_LISTENERS
           value: "PLAINTEXT://:9092,EXTERNAL://:9094"
         - name: KAFKA_CFG_ADVERTISED_LISTENERS
-          value: "PLAINTEXT://\$(MY_POD_NAME).kafka-broker-headless.data-platform.svc.cluster.local:9092,EXTERNAL://\$(MY_POD_IP):9094"
+          value: "PLAINTEXT://kafka-broker-0.kafka-broker-headless.data-platform.svc.cluster.local:9092,EXTERNAL://kafka-broker-0.kafka-broker-headless.data-platform.svc.cluster.local:9094"
         - name: KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP
           value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
         - name: KAFKA_CFG_INTER_BROKER_LISTENER_NAME
           value: "PLAINTEXT"
-        - name: MY_POD_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.name
-        - name: MY_POD_IP
-          valueFrom:
-            fieldRef:
-              fieldPath: status.podIP
         - name: KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE
           value: "true"
         - name: KAFKA_CFG_DEFAULT_REPLICATION_FACTOR
-          value: "3"
+          value: "1"
         - name: KAFKA_CFG_MIN_INSYNC_REPLICAS
-          value: "2"
+          value: "1"
         - name: ALLOW_PLAINTEXT_LISTENER
           value: "yes"
         ports:
